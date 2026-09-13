@@ -224,6 +224,7 @@ def main():
     # ── Initialize Visual System ─────────────────────────────────────────
     visual = None
     cached_visual = (None, None)
+    last_vision_obs = None
     VISION_RATIO = 500  # process vision every 500 physics steps (500ms)
     if args.visual and brain is not None:
         print("Initializing visual system (Go2 cameras → T2 → LC4 → GF)...")
@@ -399,7 +400,7 @@ def main():
                          and not args.no_vision)
             if do_vision:
                 # Move looming ball toward robot (cycles between far and near)
-                ball_dist = 4.0 - (step * PHYSICS_DT * 0.3) % 3.5  # 0.3m/s approach
+                ball_dist = 4.0 - (step * PHYSICS_DT * 0.5) % 3.8  # 0.5m/s approach, min 0.2m
                 ball_pos = sim.position + np.array([ball_dist, 0.0, 0.25])
                 sim.set_looming_ball(ball_pos)
 
@@ -408,6 +409,8 @@ def main():
                 if vis_idx is not None:
                     cached_visual = (vis_idx, vis_rates)
                     brain.set_visual_rates(vis_idx, vis_rates)
+                # Cache vision_obs for monitor retina display
+                last_vision_obs = vision_obs
                 # Per-eye T2 fallback for directional threat bias
                 if cached_visual[1] is not None and hasattr(visual, '_T2_eye'):
                     vis_eye = visual._T2_eye
@@ -555,6 +558,14 @@ def main():
                     ball_pos = sim.get_looming_ball_pos()
                     if ball_pos is not None:
                         mon_data['ball_x'] = float(ball_pos[0])
+                    # Retina brightness (for monitor retina panel)
+                    if last_vision_obs is not None:
+                        mon_data['bright_left'] = float(np.mean(last_vision_obs[0]))
+                        mon_data['bright_right'] = float(np.mean(last_vision_obs[1]))
+                        mon_data['dark_omm_left'] = int(np.sum(
+                            np.mean(last_vision_obs[0], axis=1) < 0.25))
+                        mon_data['dark_omm_right'] = int(np.sum(
+                            np.mean(last_vision_obs[1], axis=1) < 0.25))
                 # Consciousness data
                 if consciousness is not None:
                     mon_data.update(consciousness.get_monitor_data())
