@@ -220,16 +220,41 @@ class Go2Sim:
     @property
     def contact_forces(self) -> np.ndarray:
         """
-        4 contact force magnitudes (N), estimated from foot z-height.
+        4 foot contact force magnitudes (N) from MuJoCo collision detection.
 
-        Uses penetration depth as a proxy since the default Go2 scene
-        has no foot touch sensors.
+        Uses mj_contactForce API to read actual contact normal forces,
+        not a z-penetration heuristic. Sums forces on each foot geom
+        from all active contacts.
         """
-        ground_z = 0.0
-        penetration = ground_z - self._foot_positions[:, 2]
-        contact = np.maximum(penetration, 0.0)
-        self._contact_forces = contact * 5000.0
-        return self._contact_forces.copy()
+        forces = np.zeros(4, dtype=np.float64)
+        # Foot geom names for lookup (collision geoms on calf bodies)
+        foot_geom_names = ['FL', 'FR', 'RL', 'RR']
+        # Resolve to geom IDs (lazy-init for efficiency)
+        if not hasattr(self, '_foot_geom_ids'):
+            self._foot_geom_ids = []
+            for name in foot_geom_names:
+                gid = mujoco.mj_name2id(
+                    self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
+                self._foot_geom_ids.append(gid if gid >= 0 else -1)
+
+        contact_force = np.zeros(6, dtype=np.float64)
+        for i in range(self.data.ncon):
+            contact = self.data.contact[i]
+            geom1 = contact.geom1
+            geom2 = contact.geom2
+            # Check if either geom is a foot
+            foot_idx = -1
+            for fi, gid in enumerate(self._foot_geom_ids):
+                if gid >= 0 and (geom1 == gid or geom2 == gid):
+                    foot_idx = fi
+                    break
+            if foot_idx >= 0:
+                mujoco.mj_contactForce(self.model, self.data, i, contact_force)
+                # contact_force[0:3] = 3D force on body2 in world frame
+                # Use magnitude as scalar force per foot
+                forces[foot_idx] += np.linalg.norm(contact_force[0:3])
+
+        return forces
 
     # ── IMU ───────────────────────────────────────────────────────────────
 
