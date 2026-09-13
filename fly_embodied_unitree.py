@@ -26,6 +26,7 @@ import sys
 import argparse
 import numpy as np
 import mujoco
+import multiprocessing as mp
 from pathlib import Path
 
 from brain_body_bridge import (
@@ -167,6 +168,8 @@ def main():
                         help='Enable camera vision: Go2 eyes → T2 → LC4 → GF escape')
     parser.add_argument('--consciousness', action='store_true',
                         help='Enable consciousness proxy measurement')
+    parser.add_argument('--no-vision', action='store_true',
+                        help='Disable visual rendering (faster, brain-only)')
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent
@@ -320,13 +323,15 @@ def main():
 
     # ── Timing Constants ───────────────────────────────────────────────
     PHYSICS_DT = 0.001          # 1 ms (1000 Hz)
-    BRAIN_RATIO = 10            # 1 brain bundle = 10 physics steps = 10 ms (100 Hz neural)
+    BRAIN_RATIO = 10            # 1 brain bundle per 10 physics steps = every 10ms
+    BRAIN_SUBSTEPS = 3          # LIF steps per bundle (1=fastest, 10=most accurate)
     MONITOR_INTERVAL = 50       # send brain data every 50 brain bundles (~0.5s)
     STATUS_INTERVAL = 1000      # status print every 1000 physics steps (1.0s)
 
     step = 0
     prev_mode = 'walking'
-    joint_targets = QuadCPG(dt=PHYSICS_DT).stand_offsets.copy()
+    fwd_drive, turn_drive = 0.0, 0.0
+    stand_pose = QuadCPG(dt=PHYSICS_DT).stand_offsets.copy()
 
     # ── Launch Viewer ──────────────────────────────────────────────────
     viewer = None
@@ -338,6 +343,11 @@ def main():
     monitor = None
     if args.monitor:
         print("Launching brain monitor...")
+        # macOS requires 'spawn' for pygame child processes
+        try:
+            mp.set_start_method('spawn', force=True)
+        except RuntimeError:
+            pass  # already set
         monitor = BrainMonitorProcess()
         monitor.start()
 
@@ -347,7 +357,7 @@ def main():
     print("  EMBODIED BRAIN → UNITREE GO2")
     print(f"  Brain: 138,639 LIF neurons on GPU")
     print(f"  Body:  Go2 quadruped, 12 actuators, physics @ {PHYSICS_DT*1000:.0f}ms")
-    print(f"  Neural: {BRAIN_RATIO}× physics = {BRAIN_RATIO*PHYSICS_DT*1000:.0f}ms interval")
+    print(f"  Neural: 1 brain step × {BRAIN_RATIO} phys steps = {BRAIN_RATIO*PHYSICS_DT*1000:.0f}ms interval")
     if auto_demo_enabled[0]:
         print("  MODE: Auto-demo (SPACE to toggle)")
     else:
@@ -385,7 +395,9 @@ def main():
                     brain.set_visual_rates(*cached_visual)
 
             # ── Visual processing (every VISION_RATIO steps) ──────────
-            if args.visual and visual is not None and step % VISION_RATIO == 0:
+            do_vision = (args.visual and visual is not None and step % VISION_RATIO == 0
+                         and not args.no_vision)
+            if do_vision:
                 # Move looming ball toward robot (cycles between far and near)
                 ball_dist = 4.0 - (step * PHYSICS_DT * 0.3) % 3.5  # 0.3m/s approach
                 ball_pos = sim.position + np.array([ball_dist, 0.0, 0.25])
@@ -445,18 +457,16 @@ def main():
                     or_idx, or_rates = olfact.get_rates()
                     brain.set_sensory_rates(or_idx, or_rates)
 
-                # -- Brain step: 10 substeps × 0.1ms = 1ms brain time --
+                # -- Brain step: BRAIN_SUBSTEPS × 0.1ms LIF per bundle --
                 if brain is not None:
-                    # Accumulate DN spikes across all substeps
                     dn_accum = {name: 0.0 for name in decoder.dn_names}
-                    pop_spikes = None
-                    for _ in range(BRAIN_RATIO):
+                    for _ in range(BRAIN_SUBSTEPS):
                         brain.step()
                         spikes = brain.get_dn_spikes()
                         for name in dn_accum:
                             dn_accum[name] = max(dn_accum[name], spikes.get(name, 0.0))
-                    if brain.populations:
-                        pop_spikes = brain.get_population_spikes()
+                    pop_spikes = (brain.get_population_spikes()
+                                  if brain.populations else None)
                     decoder.update(dn_accum, pop_spikes)
 
                     if consciousness is not None:
@@ -474,7 +484,8 @@ def main():
                     adaptor.bridge.olfactory_repulsion_bias = olfact.repulsion_bias
 
                 # -- Compute joint targets ───────────────────────────
-                joint_targets = adaptor.compute_action(dt=BRAIN_RATIO * PHYSICS_DT)
+                fwd_drive, turn_drive = adaptor.compute_drive(
+                    dt=BRAIN_RATIO * PHYSICS_DT)
 
                 # -- Mode logging ────────────────────────────────────
                 if adaptor.mode != prev_mode:
@@ -484,9 +495,11 @@ def main():
             else:
                 brain_bundle = False
 
-            # ── Body step ──────────────────────────────────────────────
-            sim.step(joint_targets if brain_bundle and brain is not None
-                     else QuadCPG(dt=PHYSICS_DT).stand_offsets)
+            # ── Body step: CPG at physics rate (every step) ───────
+            if brain is not None:
+                sim.step(adaptor.cpg.step(fwd_drive, turn_drive))
+            else:
+                sim.step(stand_pose)
 
             # ── Status print ───────────────────────────────────────────
             if step % STATUS_INTERVAL == 0:
@@ -523,6 +536,28 @@ def main():
                 if olfact is not None:
                     mon_data['or_attractive'] = olfact.attractive_level
                     mon_data['or_repulsive'] = olfact.repulsive_level
+                # Visual data
+                if args.visual and visual is not None:
+                    mon_data['lplc2_left'] = d.get_pop_rate('LPLC2_left')
+                    mon_data['lplc2_right'] = d.get_pop_rate('LPLC2_right')
+                    mon_data['lc4_left'] = d.get_pop_rate('LC4_left')
+                    mon_data['lc4_right'] = d.get_pop_rate('LC4_right')
+                    mon_data['threat_asym'] = adaptor.bridge.threat_asym
+                    if cached_visual[1] is not None and hasattr(visual, '_T2_eye'):
+                        vis_eye = visual._T2_eye
+                        vis_r = cached_visual[1]
+                        mask_L = vis_eye == 0
+                        mask_R = vis_eye == 1
+                        mon_data['t2_left'] = float(
+                            np.mean(vis_r[mask_L]) / 120.0) if mask_L.any() else 0.0
+                        mon_data['t2_right'] = float(
+                            np.mean(vis_r[mask_R]) / 120.0) if mask_R.any() else 0.0
+                    ball_pos = sim.get_looming_ball_pos()
+                    if ball_pos is not None:
+                        mon_data['ball_x'] = float(ball_pos[0])
+                # Consciousness data
+                if consciousness is not None:
+                    mon_data.update(consciousness.get_monitor_data())
                 monitor.send(mon_data)
 
             step += 1

@@ -125,50 +125,52 @@ class Go2Adaptor:
     def __init__(self, decoder, dt=0.01):
         from brain_body_bridge import BrainBodyBridge
         self.bridge = BrainBodyBridge(decoder)
-        self.cpg = QuadCPG(dt=dt)
+        self.cpg = QuadCPG(dt=0.001)  # run CPG at physics rate (1kHz)
         self.dt = dt
 
         self.drive = np.array([0.0, 0.0])
         self.mode = 'walking'
 
+        # Drive amplification: brain signals are weak (~0.1-0.3)
+        # but CPG needs 0.3-0.5 for visible walking.
+        self.drive_gain = 3.0
+
         # Escape hysteresis: prevent rapid escape/walk oscillations
         self._escape_cooldown = 0.0   # seconds remaining before re-entering escape
         self._escape_min_gap = 2.0    # minimum seconds between escape episodes
 
-    def compute_action(self, dt=None):
-        """
-        Compute 12 joint targets from current DN rates.
-        """
+    def compute_drive(self, dt=None):
+        """Compute [forward, turn] drive from DN rates (no CPG step)."""
         if dt is None:
             dt = self.dt
 
-        # Update escape cooldown timer
         self._escape_cooldown = max(0.0, self._escape_cooldown - dt)
-
         self.drive = self.bridge.compute_drive(dt=dt)
         mode = self.bridge.mode
 
-        # Escape hysteresis: don't re-enter escape immediately after leaving.
-        # Allow only one escape episode every _escape_min_gap seconds.
         if mode == 'escape' and self._escape_cooldown > 0:
-            mode = 'walking'  # override: still in cooldown, stay walking
+            mode = 'walking'
         elif mode == 'escape' and self._escape_cooldown <= 0:
-            self._escape_cooldown = self._escape_min_gap  # start cooldown
+            self._escape_cooldown = self._escape_min_gap
 
         self.mode = mode
 
         if mode == 'escape':
-            forward = min(abs(self.drive[0]) + abs(self.drive[1]), 1.0)
-            turn = np.clip(self.drive[1] * 2.0, -1.0, 1.0)
-            return self.cpg.step(forward, turn)
-
+            fwd = min(abs(self.drive[0]) + abs(self.drive[1]), 1.0) * self.drive_gain
+            fwd = min(fwd, 1.0)
+            turn = np.clip(self.drive[1] * 2.0 * self.drive_gain, -1.0, 1.0)
         elif mode in ('grooming', 'feeding'):
-            return self.cpg.step(0.0, 0.0)
+            fwd, turn = 0.0, 0.0
+        else:
+            fwd = min(abs(self.drive[0]) * self.drive_gain, 1.0)
+            turn = np.clip(self.drive[1] * self.drive_gain, -1.0, 1.0)
 
-        else:  # walking
-            forward = abs(self.drive[0])
-            turn = self.drive[1]
-            return self.cpg.step(forward, turn)
+        return fwd, turn
+
+    def compute_action(self, dt=None):
+        """Deprecated: kept for compatibility. Use compute_drive() + cpg.step()."""
+        fwd, turn = self.compute_drive(dt)
+        return self.cpg.step(fwd, turn)
 
     def reset(self):
         self.cpg.reset()
