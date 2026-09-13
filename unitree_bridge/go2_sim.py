@@ -90,6 +90,43 @@ class Go2Sim:
         self._foot_positions = np.zeros((4, 3), dtype=np.float64)
         self._contact_forces = np.zeros(4, dtype=np.float64)
 
+        # Looming ball body/joint IDs (look up lazily)
+        self._ball_body_id = -1
+        self._ball_jnt_qpos_adr = -1
+        try:
+            self._ball_body_id = mujoco.mj_name2id(
+                self.model, mujoco.mjtObj.mjOBJ_BODY, 'looming_ball')
+            ball_jnt = mujoco.mj_name2id(
+                self.model, mujoco.mjtObj.mjOBJ_JOINT, 'looming_ball_joint')
+            if ball_jnt >= 0:
+                self._ball_jnt_qpos_adr = int(self.model.jnt_qposadr[ball_jnt])
+        except Exception:
+            pass  # no looming ball in scene
+
+    def set_looming_ball(self, pos, size=None):
+        """Move the looming ball to a world position.
+        
+        Args:
+            pos: (x, y, z) world position in meters
+            size: optional radius override in meters
+        """
+        if self._ball_jnt_qpos_adr >= 0:
+            adr = self._ball_jnt_qpos_adr
+            self.data.qpos[adr:adr + 3] = pos
+            self.data.qpos[adr + 3:adr + 7] = [1, 0, 0, 0]  # identity quat
+        if size is not None and self._ball_body_id >= 0:
+            # Update geom size
+            geom_id = self.model.body_geomadr[self._ball_body_id]
+            if geom_id >= 0:
+                self.model.geom_size[geom_id][0] = size
+
+    def get_looming_ball_pos(self):
+        """Get current looming ball position or None if not present."""
+        if self._ball_jnt_qpos_adr >= 0:
+            return self.data.qpos[self._ball_jnt_qpos_adr:
+                                  self._ball_jnt_qpos_adr + 3].copy()
+        return None
+
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def reset(self):

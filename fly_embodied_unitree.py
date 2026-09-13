@@ -386,6 +386,11 @@ def main():
 
             # ── Visual processing (every VISION_RATIO steps) ──────────
             if args.visual and visual is not None and step % VISION_RATIO == 0:
+                # Move looming ball toward robot (cycles between far and near)
+                ball_dist = 4.0 - (step * PHYSICS_DT * 0.3) % 3.5  # 0.3m/s approach
+                ball_pos = sim.position + np.array([ball_dist, 0.0, 0.25])
+                sim.set_looming_ball(ball_pos)
+
                 vision_obs = go2_vision.process()
                 vis_idx, vis_rates = visual.process_visual_layers(vision_obs)
                 if vis_idx is not None:

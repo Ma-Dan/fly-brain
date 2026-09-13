@@ -29,18 +29,23 @@ class Go2VisualBridge:
     photoreceptor subtypes (R1-R6 vs R7/R8) in the fly retina.
     """
 
-    def __init__(self, model, data, width=256, height=256):
+    def __init__(self, model, data, width=256, height=256,
+                 contrast_gain=0.6):
         """
         Args:
             model: mujoco.MjModel
             data:   mujoco.MjData
             width:  render width per eye
             height: render height per eye
+            contrast_gain: gain applied to brightness before contrast calc.
+                           1.0 = full contrast, <1.0 = suppress background,
+                           reduces false T2 activation on static scenes.
         """
         self.model = model
         self.data = data
         self.width = width
         self.height = height
+        self.contrast_gain = contrast_gain
 
         # Create offscreen renderer
         self._renderer = mujoco.Renderer(model, height=height, width=width)
@@ -186,5 +191,12 @@ class Go2VisualBridge:
 
         # Stack: (2, 721, 2)
         vision_obs = np.stack([omm_left, omm_right], axis=0).astype(np.float32)
+
+        # Apply contrast gain to suppress false T2 activation from
+        # static backgrounds. gain=0.5 → dimmer areas pulled toward
+        # mean; dark looming objects retain contrast, floor fades.
+        if self.contrast_gain < 1.0:
+            mean_val = vision_obs.mean()
+            vision_obs = mean_val + self.contrast_gain * (vision_obs - mean_val)
 
         return vision_obs

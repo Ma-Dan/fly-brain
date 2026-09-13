@@ -131,6 +131,10 @@ class Go2Adaptor:
         self.drive = np.array([0.0, 0.0])
         self.mode = 'walking'
 
+        # Escape hysteresis: prevent rapid escape/walk oscillations
+        self._escape_cooldown = 0.0   # seconds remaining before re-entering escape
+        self._escape_min_gap = 2.0    # minimum seconds between escape episodes
+
     def compute_action(self, dt=None):
         """
         Compute 12 joint targets from current DN rates.
@@ -138,15 +142,27 @@ class Go2Adaptor:
         if dt is None:
             dt = self.dt
 
-        self.drive = self.bridge.compute_drive(dt=dt)
-        self.mode = self.bridge.mode
+        # Update escape cooldown timer
+        self._escape_cooldown = max(0.0, self._escape_cooldown - dt)
 
-        if self.mode == 'escape':
+        self.drive = self.bridge.compute_drive(dt=dt)
+        mode = self.bridge.mode
+
+        # Escape hysteresis: don't re-enter escape immediately after leaving.
+        # Allow only one escape episode every _escape_min_gap seconds.
+        if mode == 'escape' and self._escape_cooldown > 0:
+            mode = 'walking'  # override: still in cooldown, stay walking
+        elif mode == 'escape' and self._escape_cooldown <= 0:
+            self._escape_cooldown = self._escape_min_gap  # start cooldown
+
+        self.mode = mode
+
+        if mode == 'escape':
             forward = min(abs(self.drive[0]) + abs(self.drive[1]), 1.0)
             turn = np.clip(self.drive[1] * 2.0, -1.0, 1.0)
             return self.cpg.step(forward, turn)
 
-        elif self.mode in ('grooming', 'feeding'):
+        elif mode in ('grooming', 'feeding'):
             return self.cpg.step(0.0, 0.0)
 
         else:  # walking
