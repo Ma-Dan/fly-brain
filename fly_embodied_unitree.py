@@ -33,6 +33,10 @@ from brain_body_bridge import (
 )
 from unitree_bridge.go2_sim import Go2Sim
 from unitree_bridge.go2_adaptor import Go2Adaptor, QuadCPG
+from unitree_bridge.go2_vision import Go2VisualBridge
+
+from visual_system import VisualSystem
+from somatosensory import SomatosensorySystem, VibrationSource
 
 from somatosensory import SomatosensorySystem, VibrationSource
 from gustatory import GustatorySystem, TasteZone
@@ -159,6 +163,8 @@ def main():
                         help='Enable taste zones (sugar/bitter)')
     parser.add_argument('--olfactory', action='store_true',
                         help='Enable olfactory (attractive/repulsive odors)')
+    parser.add_argument('--visual', action='store_true',
+                        help='Enable camera vision: Go2 eyes → T2 → LC4 → GF escape')
     parser.add_argument('--consciousness', action='store_true',
                         help='Enable consciousness proxy measurement')
     args = parser.parse_args()
@@ -211,6 +217,18 @@ def main():
     sim = Go2Sim(str(_GO2_SCENE), timestep=0.001)
     sim.reset()
     print(f"Go2: {sim.model.nu} actuators, standing at z={sim.position[2]:.3f}m")
+
+    # ── Initialize Visual System ─────────────────────────────────────────
+    visual = None
+    cached_visual = (None, None)
+    VISION_RATIO = 500  # process vision every 500 physics steps (500ms)
+    if args.visual and brain is not None:
+        print("Initializing visual system (Go2 cameras → T2 → LC4 → GF)...")
+        go2_vision = Go2VisualBridge(sim.model, sim.data, width=128, height=128)
+        visual = VisualSystem(brain.flyid2i, brain.i2flyid)
+        print(f"  T2 neurons: {visual._n_T2 if hasattr(visual, '_n_T2') else '?'} "
+              f"LC4: {sum(len(v) for v in visual.get_lc4_indices(brain.flyid2i).values())} "
+              f"LPLC2: {sum(len(v) for v in visual.get_lplc2_indices(brain.flyid2i).values())}")
 
     # ── Initialize Sensory Systems ─────────────────────────────────────
     somato = None
@@ -284,6 +302,14 @@ def main():
             brain.register_population('JO_sound_R', somato.sound_idx_right)
             decoder.register_population('JO_sound_R')
 
+    # Register LPLC2/LC4 populations for directional escape
+    if args.visual and visual is not None:
+        lplc2_idx = visual.get_lplc2_indices(brain.flyid2i)
+        lc4_idx = visual.get_lc4_indices(brain.flyid2i)
+        for name, indices in {**lplc2_idx, **lc4_idx}.items():
+            brain.register_population(name, indices)
+            decoder.register_population(name)
+
     # ── Set initial stimulus ───────────────────────────────────────────
     if brain is not None:
         brain.set_stimulus(active_stimulus[0])
@@ -354,6 +380,27 @@ def main():
             if stim_changed[0] and brain is not None:
                 brain.set_stimulus(active_stimulus[0])
                 stim_changed[0] = False
+                # Re-apply cached visual rates (set_stimulus zeros all rates)
+                if cached_visual[0] is not None:
+                    brain.set_visual_rates(*cached_visual)
+
+            # ── Visual processing (every VISION_RATIO steps) ──────────
+            if args.visual and visual is not None and step % VISION_RATIO == 0:
+                vision_obs = go2_vision.process()
+                vis_idx, vis_rates = visual.process_visual_layers(vision_obs)
+                if vis_idx is not None:
+                    cached_visual = (vis_idx, vis_rates)
+                    brain.set_visual_rates(vis_idx, vis_rates)
+                # Per-eye T2 fallback for directional threat bias
+                if cached_visual[1] is not None and hasattr(visual, '_T2_eye'):
+                    vis_eye = visual._T2_eye
+                    vis_r = cached_visual[1]
+                    mask_L = vis_eye == 0
+                    mask_R = vis_eye == 1
+                    t2_left = float(np.mean(vis_r[mask_L])) if mask_L.any() else 0.0
+                    t2_right = float(np.mean(vis_r[mask_R])) if mask_R.any() else 0.0
+                    adaptor.bridge.visual_threat_bias = (
+                        (t2_right - t2_left) / (t2_left + t2_right + 1e-6))
 
             # ── Sensory processing (every brain interval) ───────────
             if step % BRAIN_RATIO == 0:
