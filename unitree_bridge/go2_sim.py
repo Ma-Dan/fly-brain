@@ -70,20 +70,65 @@ class Go2Sim:
     """
 
     def __init__(self, model_path, timestep=0.001,
-                 kp=DEFAULT_KP, kd=DEFAULT_KD):
+                 kp=None, kd=None):
         self.model = mujoco.MjModel.from_xml_path(str(model_path))
         self.model.opt.timestep = timestep
         self.data = mujoco.MjData(self.model)
 
-        # PD gains
-        self.kp = kp
-        self.kd = kd
+        # Detect actuator type: general (MJX) = built-in PD, motor (Unitree) = manual
+        self._use_general_actuators = (
+            self.model.nu > 0 and self.model.actuator_trntype[0] != 0)
+        # Store for compatibility but not used with general actuators
+        self.kp = kp if kp is not None else 50.0
+        self.kd = kd if kd is not None else 1.0
+
+        # Sensor offsets: auto-detect from naming convention
+        self._detect_sensor_offsets()
 
         # Look up body IDs for foot position queries
-        self._foot_body_ids = np.array([
-            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
-            for name in FOOT_BODIES
-        ], dtype=np.int32)
+        # MJX scene has no foot child bodies; use calf bodies instead
+        foot_bodies_fallback = {
+            'FL_foot': 'FL_calf', 'FR_foot': 'FR_calf',
+            'RL_foot': 'RL_calf', 'RR_foot': 'RR_calf',
+        }
+        self._foot_body_ids = np.zeros(4, dtype=np.int32)
+        for i, name in enumerate(FOOT_BODIES):
+            bid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
+            if bid < 0:
+                bid = mujoco.mj_name2id(
+                    self.model, mujoco.mjtObj.mjOBJ_BODY, foot_bodies_fallback[name])
+            self._foot_body_ids[i] = bid
+
+        # Internal state
+        self._step_count = 0
+        self._foot_positions = np.zeros((4, 3), dtype=np.float64)
+        self._contact_forces = np.zeros(4, dtype=np.float64)
+
+    def _detect_sensor_offsets(self):
+        """Auto-detect sensor addresses by scanning sensor names."""
+        self._imu_gyro_adr = -1
+        self._imu_acc_adr = -1
+        self._imu_quat_adr = -1
+        self._frame_pos_adr = -1
+        self._frame_vel_adr = -1
+
+        adr_map = {
+            'imu_quat': ('_imu_quat_adr', 4),
+            'orientation': ('_imu_quat_adr', 4),
+            'imu_gyro': ('_imu_gyro_adr', 3),
+            'gyro': ('_imu_gyro_adr', 3),
+            'imu_acc': ('_imu_acc_adr', 3),
+            'accelerometer': ('_imu_acc_adr', 3),
+            'frame_pos': ('_frame_pos_adr', 3),
+            'global_position': ('_frame_pos_adr', 3),
+            'frame_vel': ('_frame_vel_adr', 3),
+            'global_linvel': ('_frame_vel_adr', 3),
+        }
+        for i in range(self.model.nsensor):
+            name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_SENSOR, i)
+            if name and name in adr_map:
+                attr, dim = adr_map[name]
+                setattr(self, attr, self.model.sensor_adr[i])
 
         # Internal state
         self._step_count = 0
@@ -139,26 +184,16 @@ class Go2Sim:
 
     def step(self, joint_targets):
         """
-        Step physics by one timestep using PD torque control.
+        Step physics by one timestep.
 
-        Torque computation (matching DDS bridge):
-            ctrl[i] = kp * (target[i] - sensordata[i])
-                    - kd * sensordata[i + 12]
-
-        Where sensordata[i] is joint position and sensordata[i+12] is velocity.
+        For general actuators (MJX scene): writes position targets to ctrl.
+          PD servo is built-in (Kp=50, gainprm[0]=50, biasprm[1]=50).
+        For motor actuators (Unitree scene): applies manual PD torque control.
 
         Args:
             joint_targets: np.ndarray of shape (12,) — desired joint positions in radians.
-                          Order: FR(hip,thigh,calf), FL(hip,thigh,calf),
-                                 RR(hip,thigh,calf), RL(hip,thigh,calf)
         """
-        # PD torque control
-        cur_pos  = self.data.sensordata[0:12]
-        cur_vel  = self.data.sensordata[12:24]
-        self.data.ctrl[:] = (
-            self.kp * (joint_targets - cur_pos) - self.kd * cur_vel
-        )
-
+        self.data.ctrl[:] = joint_targets
         mujoco.mj_step(self.model, self.data)
         self._step_count += 1
         self._update_foot_positions()
@@ -220,40 +255,33 @@ class Go2Sim:
     @property
     def contact_forces(self) -> np.ndarray:
         """
-        4 foot contact force magnitudes (N) from MuJoCo collision detection.
+        4 foot contact force magnitudes (N) from calf collision geoms.
 
-        Uses mj_contactForce API to read actual contact normal forces,
-        not a z-penetration heuristic. Sums forces on each foot geom
-        from all active contacts.
+        Uses mj_contactForce on FL/FR/RL/RR geoms (calf body foot
+        spheres) to compute real normal forces.
         """
         forces = np.zeros(4, dtype=np.float64)
-        # Foot geom names for lookup (collision geoms on calf bodies)
-        foot_geom_names = ['FL', 'FR', 'RL', 'RR']
-        # Resolve to geom IDs (lazy-init for efficiency)
-        if not hasattr(self, '_foot_geom_ids'):
-            self._foot_geom_ids = []
-            for name in foot_geom_names:
-                gid = mujoco.mj_name2id(
-                    self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
-                self._foot_geom_ids.append(gid if gid >= 0 else -1)
+        calf_names = ['FL', 'FR', 'RL', 'RR']
 
-        contact_force = np.zeros(6, dtype=np.float64)
+        if not hasattr(self, '_calf_ids'):
+            self._calf_ids = np.array([
+                mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, n)
+                for n in calf_names], dtype=np.int32)
+
+        cforce = np.zeros(6, dtype=np.float64)
         for i in range(self.data.ncon):
             contact = self.data.contact[i]
-            geom1 = contact.geom1
-            geom2 = contact.geom2
-            # Check if either geom is a foot
-            foot_idx = -1
-            for fi, gid in enumerate(self._foot_geom_ids):
-                if gid >= 0 and (geom1 == gid or geom2 == gid):
-                    foot_idx = fi
+            g1, g2 = contact.geom1, contact.geom2
+            for fi, gid in enumerate(self._calf_ids):
+                if gid >= 0 and (g1 == gid or g2 == gid):
+                    mujoco.mj_contactForce(self.model, self.data, i, cforce)
+                    # cforce[0:3] = world-frame force on body2
+                    # contact.frame[0:3] = contact normal (world frame)
+                    normal = contact.frame[0:3]
+                    # Project force onto contact normal for scalar normal force
+                    normal_force = abs(np.dot(cforce[0:3], normal))
+                    forces[fi] += normal_force
                     break
-            if foot_idx >= 0:
-                mujoco.mj_contactForce(self.model, self.data, i, contact_force)
-                # contact_force[0:3] = 3D force on body2 in world frame
-                # Use magnitude as scalar force per foot
-                forces[foot_idx] += np.linalg.norm(contact_force[0:3])
-
         return forces
 
     # ── IMU ───────────────────────────────────────────────────────────────
@@ -261,17 +289,23 @@ class Go2Sim:
     @property
     def imu_quat(self) -> np.ndarray:
         """IMU quaternion (w, x, y, z)."""
-        return self.data.sensordata[IMU_QUAT_ADR:IMU_QUAT_ADR + 4].copy()
+        if self._imu_quat_adr >= 0:
+            return self.data.sensordata[self._imu_quat_adr:self._imu_quat_adr + 4].copy()
+        return self.data.qpos[3:7].copy()  # fallback to body quat
 
     @property
     def imu_gyro(self) -> np.ndarray:
         """IMU angular velocity (x, y, z) in rad/s."""
-        return self.data.sensordata[IMU_GYRO_ADR:IMU_GYRO_ADR + 3].copy()
+        if self._imu_gyro_adr >= 0:
+            return self.data.sensordata[self._imu_gyro_adr:self._imu_gyro_adr + 3].copy()
+        return self.data.qvel[3:6].copy()
 
     @property
     def imu_acc(self) -> np.ndarray:
         """IMU linear acceleration (x, y, z) in m/s²."""
-        return self.data.sensordata[IMU_ACC_ADR:IMU_ACC_ADR + 3].copy()
+        if self._imu_acc_adr >= 0:
+            return self.data.sensordata[self._imu_acc_adr:self._imu_acc_adr + 3].copy()
+        return np.zeros(3)
 
     # ── Viewer ────────────────────────────────────────────────────────────
 

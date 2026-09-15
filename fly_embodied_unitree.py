@@ -49,8 +49,8 @@ try:
 except ImportError:
     ConsciousnessDetector = None
 
-# Go2 model path (relative to project root)
-_GO2_SCENE = Path(__file__).resolve().parent / 'vendor' / 'unitree_mujoco' / 'unitree_robots' / 'go2' / 'scene.xml'
+# Go2 model path (Menagerie MJX: built-in PD servos, better friction/damping)
+_GO2_SCENE = Path('./unitree_go2/scene_mjx.xml').resolve()
 
 # ============================================================================
 # Auto-demo sequence

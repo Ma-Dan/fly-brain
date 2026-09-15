@@ -27,8 +27,13 @@ TROT_PHASES = np.array([0.0, np.pi, np.pi, 0.0])  # FR, FL, RR, RL
 # Standing pose (from PD-torque equilibrium at kp=40, kd=1)
 STAND_THIGH = 0.3
 STAND_KNEE = -1.0
+# MJX actuator order: FL→FR→RL→RR
 STAND_POSE = np.array(
-    [0.0, STAND_THIGH, STAND_KNEE] * 4, dtype=np.float64)
+    [0.0, STAND_THIGH, STAND_KNEE,  # FL
+     0.0, STAND_THIGH, STAND_KNEE,  # FR
+     0.0, STAND_THIGH, STAND_KNEE,  # RL
+     0.0, STAND_THIGH, STAND_KNEE], # RR
+    dtype=np.float64)
 
 
 # ============================================================================
@@ -84,23 +89,23 @@ class QuadCPG:
 
         phase = self.phases[0]
 
-        # Diagonal A (FR + RL): push when sine non-negative
-        push_FR = -self.push_amp * left_amp if np.sin(phase) >= 0 else 0.0
-        push_RL = -self.push_amp * right_amp if np.sin(phase + np.pi) < 0 else 0.0
-        # Diagonal B (FL + RR): push when sine negative (opposite half-cycle)
-        push_FL = -self.push_amp * left_amp if np.sin(phase + np.pi) >= 0 else 0.0
-        push_RR = -self.push_amp * right_amp if np.sin(phase) < 0 else 0.0
+        # Diagonal A (FL + RR): push when sine non-negative
+        push_FL = -self.push_amp * left_amp if np.sin(phase) >= 0 else 0.0
+        push_RR = -self.push_amp * right_amp if np.sin(phase + np.pi) < 0 else 0.0
+        # Diagonal B (FR + RL): push when sine negative (opposite half-cycle)
+        push_FR = -self.push_amp * right_amp if np.sin(phase + np.pi) >= 0 else 0.0
+        push_RL = -self.push_amp * left_amp if np.sin(phase) < 0 else 0.0
 
         targets = self.stand_offsets.copy()
-        # Actuator order: FR(0-2), FL(3-5), RR(6-8), RL(9-11)
-        targets[1] += push_FR; targets[10] += push_RL
-        targets[4] += push_FL; targets[7] += push_RR
+        # MJX actuator order: FL(0-2), FR(3-5), RL(6-8), RR(9-11)
+        targets[1] += push_FL; targets[10] += push_RR
+        targets[4] += push_FR; targets[7] += push_RL
 
         # Foot lift on opposite pair
-        if push_FR < 0 and push_RL < 0:
-            targets[5] -= self.lift_amp * amp; targets[8] -= self.lift_amp * amp  # FL,RR
         if push_FL < 0 and push_RR < 0:
-            targets[2] -= self.lift_amp * amp; targets[11] -= self.lift_amp * amp  # FR,RL
+            targets[5] -= self.lift_amp * amp; targets[8] -= self.lift_amp * amp  # FR,RL
+        if push_FR < 0 and push_RL < 0:
+            targets[2] -= self.lift_amp * amp; targets[11] -= self.lift_amp * amp  # FL,RR
 
         self.step_count += 1
         return targets
