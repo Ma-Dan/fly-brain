@@ -50,7 +50,7 @@ except ImportError:
     ConsciousnessDetector = None
 
 # Go2 model path (Menagerie MJX: built-in PD servos, better friction/damping)
-_GO2_SCENE = Path('./unitree_go2/scene_mjx.xml').resolve()
+_GO2_SCENE = Path('./unitree_go2/scene.xml').resolve()
 
 # ============================================================================
 # Auto-demo sequence
@@ -170,6 +170,8 @@ def main():
                         help='Enable consciousness proxy measurement')
     parser.add_argument('--no-vision', action='store_true',
                         help='Disable visual rendering (faster, brain-only)')
+    parser.add_argument('--fast', action='store_true',
+                        help='Speed mode: skip Hebbian plasticity, fewer brain substeps')
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent
@@ -325,7 +327,7 @@ def main():
     # ── Timing Constants ───────────────────────────────────────────────
     PHYSICS_DT = 0.001          # 1 ms (1000 Hz)
     BRAIN_RATIO = 10            # 1 brain bundle per 10 physics steps = every 10ms
-    BRAIN_SUBSTEPS = 3          # LIF steps per bundle (1=fastest, 10=most accurate)
+    BRAIN_SUBSTEPS = 2 if args.fast else 3  # LIF steps per bundle (more = stronger signal)
     MONITOR_INTERVAL = 50       # send brain data every 50 brain bundles (~0.5s)
     STATUS_INTERVAL = 1000      # status print every 1000 physics steps (1.0s)
 

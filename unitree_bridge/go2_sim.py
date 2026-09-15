@@ -14,6 +14,10 @@ from pathlib import Path
 import mujoco
 from mujoco import viewer
 
+# Optimize CPU performance on macOS
+import torch
+torch.set_num_threads(min(torch.get_num_threads(), 8))
+
 # ============================================================================
 # Constants
 # ============================================================================
@@ -175,8 +179,11 @@ class Go2Sim:
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def reset(self):
-        """Reset simulation to initial state."""
+        """Reset simulation to initial state (matching go2_walk.py reference)."""
         mujoco.mj_resetData(self.model, self.data)
+        # Set initial stance: z=0.35, thigh=0.8, calf=-1.5, hip=0
+        self.data.qpos[2] = 0.35
+        self.data.qpos[7:19] = [0, 0.8, -1.5] * 4
         mujoco.mj_forward(self.model, self.data)
         self._step_count = 0
 
@@ -187,13 +194,23 @@ class Go2Sim:
         Step physics by one timestep.
 
         For general actuators (MJX scene): writes position targets to ctrl.
-          PD servo is built-in (Kp=50, gainprm[0]=50, biasprm[1]=50).
-        For motor actuators (Unitree scene): applies manual PD torque control.
+          PD servo is built-in (gainprm[0]=50, biasprm[1]=50).
+        For motor actuators (standard scene): applies manual PD torque
+          (kp=50, kd=1.5) matching go2_walk.py reference.
 
         Args:
             joint_targets: np.ndarray of shape (12,) — desired joint positions in radians.
         """
-        self.data.ctrl[:] = joint_targets
+        if self._use_general_actuators:
+            self.data.ctrl[:] = joint_targets
+        else:
+            # Manual PD torque control for motor actuators (kp=50, kd=1.5)
+            kp, kd = 50.0, 1.5
+            for j in range(12):
+                pos = self.data.qpos[7 + j]
+                vel = self.data.qvel[6 + j]
+                self.data.ctrl[j] = kp * (joint_targets[j] - pos) - kd * vel
+
         mujoco.mj_step(self.model, self.data)
         self._step_count += 1
         self._update_foot_positions()
