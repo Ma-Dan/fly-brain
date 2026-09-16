@@ -327,7 +327,7 @@ def main():
     # ── Timing Constants ───────────────────────────────────────────────
     PHYSICS_DT = 0.001          # 1 ms (1000 Hz)
     BRAIN_RATIO = 10            # 1 brain bundle per 10 physics steps = every 10ms
-    BRAIN_SUBSTEPS = 2 if args.fast else 3  # LIF steps per bundle (more = stronger signal)
+    BRAIN_SUBSTEPS = 3 if args.fast else 5  # LIF steps per bundle (more = stronger DN signal)
     MONITOR_INTERVAL = 50       # send brain data every 50 brain bundles (~0.5s)
     STATUS_INTERVAL = 1000      # status print every 1000 physics steps (1.0s)
 
