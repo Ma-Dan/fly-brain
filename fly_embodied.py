@@ -147,6 +147,8 @@ def main():
     parser.add_argument('--consciousness', action='store_true',
                         help='Enable consciousness proxy measurement '
                              '(Phi/IIT, GWT, Self-Model, Perturbation)')
+    parser.add_argument('--mlx', action='store_true',
+                        help='Use MLX (Apple Silicon Metal) brain backend instead of PyTorch')
     args = parser.parse_args()
 
     # -- State --
@@ -194,8 +196,17 @@ def main():
     # ── Initialize brain ──
     brain = None
     if not args.no_brain:
-        print("Initializing brain (138,639 neurons on GPU)...")
-        brain = BrainEngine(device='cuda')
+        if args.mlx:
+            from pathlib import Path as _Path
+            _code = str(_Path(__file__).resolve().parent / 'code')
+            if _code not in sys.path:
+                sys.path.insert(0, _code)
+            from brain_body_bridge_mlx import MlxBrainEngine
+            print("Initializing brain (138,639 neurons on Metal via MLX)...")
+            brain = MlxBrainEngine()
+        else:
+            print("Initializing brain (138,639 neurons on GPU)...")
+            brain = BrainEngine(device='cuda')
 
     # ── Initialize visual system (if --visual) ──
     visual = None
@@ -269,7 +280,9 @@ def main():
     # ── Initialize consciousness detection (if --consciousness) ──
     consciousness = None
     if args.consciousness and brain is not None:
-        if ConsciousnessDetector is not None:
+        if args.mlx:
+            print("[WARN] --consciousness requires PyTorch backend, ignored with --mlx")
+        elif ConsciousnessDetector is not None:
             consciousness = ConsciousnessDetector(brain)
         else:
             print("[WARN] consciousness.py not found, --consciousness ignored")
@@ -869,8 +882,11 @@ def main():
                     if brain is not None:
                         lc4_idx = brain.stim_indices.get('lc4', [])
                         if lc4_idx:
-                            spk = brain.state[2]
-                            lc4_spikes = spk[0, lc4_idx].sum().item()
+                            if hasattr(brain, 'get_spike_count'):
+                                lc4_spikes = brain.get_spike_count(lc4_idx)
+                            else:
+                                spk = brain.state[2]
+                                lc4_spikes = spk[0, lc4_idx].sum().item()
                             lc4_info = f" LC4spk={lc4_spikes:.0f}"
                     # Vision diagnostics (retina values are [0,1])
                     vis_info = ""

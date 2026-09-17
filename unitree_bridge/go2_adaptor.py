@@ -18,7 +18,7 @@ STAND_KNEE = -1.5
 STAND_POSE = np.array([
     STAND_HIP, STAND_THIGH, STAND_KNEE,      # FL
     STAND_HIP, STAND_THIGH, STAND_KNEE,      # FR
-    STAND_HIP, STAND_THIGH + 0.2, STAND_KNEE,  # RL: less forward thigh
+    STAND_HIP, STAND_THIGH + 0.5, STAND_KNEE,  # RL: less forward thigh
     STAND_HIP, STAND_THIGH, STAND_KNEE,      # RR
 ], dtype=np.float64)
 

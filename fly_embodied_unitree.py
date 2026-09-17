@@ -168,6 +168,8 @@ def main():
                         help='Enable camera vision: Go2 eyes → T2 → LC4 → GF escape')
     parser.add_argument('--consciousness', action='store_true',
                         help='Enable consciousness proxy measurement')
+    parser.add_argument('--mlx', action='store_true',
+                        help='Use MLX (Apple Silicon Metal) brain backend instead of PyTorch')
     parser.add_argument('--no-vision', action='store_true',
                         help='Disable visual rendering (faster, brain-only)')
     parser.add_argument('--fast', action='store_true',
@@ -214,8 +216,15 @@ def main():
     # ── Initialize Brain ───────────────────────────────────────────────
     brain = None
     if not args.no_brain:
-        print("Initializing brain (138,639 neurons on GPU)...")
-        brain = BrainEngine(device='cuda')
+        if args.mlx:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).resolve().parent / 'code'))
+            from brain_body_bridge_mlx import MlxBrainEngine
+            print("Initializing brain (138,639 neurons on Metal via MLX)...")
+            brain = MlxBrainEngine()
+        else:
+            print("Initializing brain (138,639 neurons on GPU)...")
+            brain = BrainEngine(device='cuda')
 
     # ── Initialize Body (Go2) ──────────────────────────────────────────
     print(f"Initializing Go2 body from {_GO2_SCENE}...")
