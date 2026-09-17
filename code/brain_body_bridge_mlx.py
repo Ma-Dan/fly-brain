@@ -43,9 +43,10 @@ class MlxBrainEngine:
         self.num_neurons = len(self.flyid2i)
 
         # Load connectome edges + build model
-        _, row_idx, col_idx, val_np = load_weights(str(conn_path), str(comp_path))
+        _, row_idx, col_idx, val_np, pre_indptr = load_weights(
+            str(conn_path), str(comp_path))
         self.model = MlxModel(self.num_neurons, DT, MODEL_PARAMS,
-                              row_idx, col_idx, val_np)
+                              row_idx, col_idx, val_np, pre_indptr)
 
         # Initialize neural state
         self.state = self.model.state_init()
@@ -89,6 +90,8 @@ class MlxBrainEngine:
                                    mx.zeros_like(max_mag))
         self._spike_acc = mx.zeros((self.num_neurons,), dtype=mx.float32)
         self._hebb_count = 0
+        self._decay_count = 0
+        self._decay_every = 100  # apply multiplicative decay every N hebb updates
 
         if self._plastic_path.exists():
             saved = np.load(self._plastic_path) if self._plastic_path.suffix == '.npy' \
@@ -102,15 +105,49 @@ class MlxBrainEngine:
               f"{len(val)} synapses")
 
     def _hebb_update(self):
-        avg = self._spike_acc / HEBB_BATCH
+        """Event-driven Hebbian potentiation + lazy multiplicative decay.
+
+        Potentiation is applied only to synapses whose PRE neuron was active
+        (avg>0) in the last HEBB_BATCH steps — under sparse activity this is
+        a handful of edges instead of all 15M. The multiplicative decay
+        (-HEBB_ALPHA·val) is folded into a lazy bulk multiply every
+        _decay_every updates, since HEBB_ALPHA=1e-7 is negligible short-term.
+        """
+        avg_np = np.array(self._spike_acc / HEBB_BATCH).astype(np.float32)
         self._spike_acc = mx.zeros((self.num_neurons,), dtype=mx.float32)
 
-        pre = mx.take(avg, self.model.col_idx)   # presynaptic activity
-        post = mx.take(avg, self.model.row_idx)  # postsynaptic activity
+        # --- Event-driven potentiation (co-active synapses only) ---
+        active = np.nonzero(avg_np > 0)[0]
+        if active.size > 0:
+            ip = self.model.pre_indptr
+            starts = ip[active]
+            ends = ip[active + 1]
+            flat = np.concatenate([
+                np.arange(starts[k], ends[k], dtype=np.int32)
+                for k in range(active.size)
+            ])
+            if flat.size > 0:
+                flat_mx = mx.array(flat)
+                edge_post_np = np.array(mx.take(self.model.row_idx, flat_mx)).astype(np.int32)
+                edge_val = mx.take(self.model.val, flat_mx)
+                edge_sign = mx.take(self._sign_mask, flat_mx)
+                pre_avg = np.repeat(avg_np[active], ends - starts).astype(np.float32)
+                post_avg = avg_np[edge_post_np].astype(np.float32)
 
-        dW = HEBB_ETA * pre * post * self._sign_mask - HEBB_ALPHA * self.model.val
-        self.model.val = mx.clip(self.model.val + dW,
-                                 self._clamp_min, self._clamp_max)
+                dW = (HEBB_ETA * mx.array(pre_avg) * mx.array(post_avg)
+                      * edge_sign)
+                edge_min = mx.take(self._clamp_min, flat_mx)
+                edge_max = mx.take(self._clamp_max, flat_mx)
+                new_edge = mx.clip(edge_val + dW, edge_min, edge_max)
+                delta = new_edge - edge_val
+                self.model.val = self.model.val.at[flat_mx].add(delta)
+
+        # --- Lazy multiplicative decay ---
+        self._decay_count += 1
+        if self._decay_count >= self._decay_every:
+            factor = 1.0 - HEBB_ALPHA * self._decay_every
+            self.model.val = self.model.val * float(factor)
+            self._decay_count = 0
 
     def save_plastic_weights(self):
         np.save(self._plastic_path.with_suffix('.npy'),
