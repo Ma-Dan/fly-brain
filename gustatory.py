@@ -66,9 +66,17 @@ class GustatorySystem:
     SUGAR_MAX_RATE = 200.0   # Hz
     BITTER_MAX_RATE = 250.0  # Hz
 
-    def __init__(self, flyid2i, zones):
+    def __init__(self, flyid2i, zones, derived_legs=None):
         self.zones = zones
         self.flyid2i = flyid2i
+
+        # derived_legs: {leg_name: [parent_leg_names]} for legs that are
+        # geometrically interpolated from real feet (e.g. Go2 phantom middle
+        # legs LM/RM). A derived leg only counts as "in a zone" if ALL its
+        # parent legs are simultaneously in that zone, preventing phantom
+        # taste detection and leg-count inflation when mapping a quadruped's
+        # 4 real feet onto the fly's 6-leg interface.
+        self.derived_legs = dict(derived_legs) if derived_legs else {}
 
         # Resolve neuron indices from STIMULI dict
         self.sugar_indices = np.array(
@@ -119,6 +127,17 @@ class GustatorySystem:
                 dist = np.linalg.norm(pos[:2] - zone.center)
                 if dist < zone.radius:
                     legs_in.append(self.LEG_NAMES[leg_idx])
+
+            # Drop derived (phantom) legs unless all their parents are also
+            # in this zone — prevents geometric interpolation from fabricating
+            # independent taste contact or inflating the leg count.
+            if self.derived_legs and legs_in:
+                in_zone = set(legs_in)
+                legs_in = [
+                    leg for leg in legs_in
+                    if leg not in self.derived_legs
+                    or all(p in in_zone for p in self.derived_legs[leg])
+                ]
 
             if zone.taste == 'sugar' and len(legs_in) > best_sugar_count:
                 self.sugar_legs = legs_in

@@ -89,24 +89,20 @@ def go2_contact_to_fly(go2_contact_forces):
     rl_f  = max(go2_contact_forces[2], 0.0)  # RL foot
     rr_f  = max(go2_contact_forces[3], 0.0)  # RR foot
 
-    left_f  = (fl_f + rl_f) * 0.5
-    right_f = (fr_f + rr_f) * 0.5
+    # Per-foot → per-fly-leg assignment (preserves fore/aft load):
+    #   LF ← FL,  LH ← RL  (front vs hind stay distinct, no averaging dilution)
+    #   LM ← mean(FL, RL)  (phantom middle leg)
+    #   RF ← FR,  RH ← RR,  RM ← mean(FR, RR)
+    leg_force = np.array([
+        fl_f, 0.5 * (fl_f + rl_f), rl_f,   # LF, LM, LH
+        fr_f, 0.5 * (fr_f + rr_f), rr_f,   # RF, RM, RH
+    ], dtype=np.float64)
 
     # Create (36, 3) array matching fly layout:
     # 6 legs (LF,LM,LH,RF,RM,RH) × 6 segments × 3 axes
     out = np.zeros((36, 3), dtype=np.float64)
-
-    # Left legs (LF=0, LM=1, LH=2): assign to all 6 segments
-    for leg in range(3):
-        for seg in range(6):
-            idx = leg * 6 + seg
-            out[idx, 2] = left_f  # z-axis force (vertical)
-
-    # Right legs (RF=3, RM=4, RH=5)
-    for leg in range(3, 6):
-        for seg in range(6):
-            idx = leg * 6 + seg
-            out[idx, 2] = right_f
+    for leg in range(6):
+        out[leg * 6:(leg + 1) * 6, 2] = leg_force[leg]  # z-axis force (vertical)
 
     return out
 
@@ -272,7 +268,12 @@ def main():
             TasteZone(center=[2.0, -1.0], radius=0.6,
                       taste='bitter', label='bitter_patch'),
         ]
-        gusto = GustatorySystem(brain.flyid2i, taste_zones)
+        # Go2 has 4 real feet; LM/RM are geometric midpoints (phantom legs).
+        # Tell gustatory so phantom legs can't fabricate independent taste
+        # contact or inflate the leg count (dedup to the 4 real feet).
+        gusto = GustatorySystem(
+            brain.flyid2i, taste_zones,
+            derived_legs={'LM': ('LF', 'LH'), 'RM': ('RF', 'RH')})
 
     olfact = None
     odor_sources = []

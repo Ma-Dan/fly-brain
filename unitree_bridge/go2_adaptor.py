@@ -11,16 +11,26 @@ import math
 ACTUATOR_PER_LEG = 3
 
 # Standing pose (matching go2_walk.py: thigh=0.8, calf=-1.5, hip=0)
+#
+# Thigh sign convention (verified against go2.xml forward kinematics):
+#   POSITIVE thigh = leg swings BACKWARD (caudal), NEGATIVE = forward.
+# At thigh=0.8 the foot sits ~0.01 m behind its hip for all four legs, so the
+# standing pose is symmetric; the RL forward-drift compensation lives in
+# QuadCPG.step (see RL_FORWARD_DRIFT_BIAS) rather than as a magic stand offset.
 STAND_HIP = 0.0
 STAND_THIGH = 0.8
 STAND_KNEE = -1.5
-# Standing pose: RL thigh reduced to 0.75 (prevents rear-left collapse)
 STAND_POSE = np.array([
     STAND_HIP, STAND_THIGH, STAND_KNEE,      # FL
     STAND_HIP, STAND_THIGH, STAND_KNEE,      # FR
-    STAND_HIP, STAND_THIGH + 0.5, STAND_KNEE,  # RL: less forward thigh
+    STAND_HIP, STAND_THIGH, STAND_KNEE,      # RL
     STAND_HIP, STAND_THIGH, STAND_KNEE,      # RR
 ], dtype=np.float64)
+
+# RL thigh oscillation-mean bias (rad, POSITIVE = swing backward) that holds
+# the rear-left foot under its hip and cancels the residual trot yaw. Set to 0
+# to disable.
+RL_FORWARD_DRIFT_BIAS = 0.4
 
 
 class QuadCPG:
@@ -70,10 +80,16 @@ class QuadCPG:
             thigh0 = self.stand_offsets[base + 1]
             calf0  = self.stand_offsets[base + 2]
 
-            # Oscillation bias: compensates for ground-contact asymmetry
-            # RL tends to drift forward because forward swing (foot lifted)
-            # is more effective than backward push (foot on ground).
-            bias = -0.06 if leg == 2 else 0.0  # leg 2 = RL
+            # RL forward-drift compensation.
+            #
+            # During the trot the RL (rear-left) foot creeps forward relative
+            # to the body, which tips the rear-left support and induces a yaw
+            # during nominally-straight walking. Because POSITIVE thigh swings
+            # the leg BACKWARD, the compensation must be a POSITIVE bias on the
+            # RL thigh so its oscillation mean shifts backward and holds the
+            # foot under the hip. (A negative bias pushes RL *forward* and makes
+            # the drift/turn worse — this was previously inverted.)
+            bias = RL_FORWARD_DRIFT_BIAS if leg == 2 else 0.0  # leg 2 = RL
 
             targets[base + 0] = hip0
             targets[base + 1] = thigh0 + ta * (math.sin(t + phase) + bias)
@@ -110,14 +126,20 @@ class Go2Adaptor:
         elif mode == 'escape': self._escape_cooldown = self._escape_min_gap
         self.mode = mode
 
+        # bridge.compute_drive() returns a DIFFERENTIAL drive [left, right]
+        # (left ≈ right ≈ forward when walking straight). Derive forward from
+        # their mean and turn from their left/right asymmetry. Reading drive[0]
+        # as forward and drive[1] as turn injects a spurious constant turn
+        # (~ right_drive * gain) during straight walking.
+        left, right = self.drive[0], self.drive[1]
         if mode == 'escape':
-            fwd = min(abs(self.drive[0]) + abs(self.drive[1]), 1.0) * self.drive_gain
-            turn = np.clip(self.drive[1] * 2.0 * self.turn_gain, -1.0, 1.0)
+            fwd = np.clip((abs(left) + abs(right)) * 0.5 * self.drive_gain, 0.0, 1.0)
+            turn = np.clip((left - right) * 2.0 * self.turn_gain, -1.0, 1.0)
         elif mode in ('grooming', 'feeding'):
             fwd, turn = 0.0, 0.0
         else:
-            fwd = min(abs(self.drive[0]) * self.drive_gain, 1.0)
-            turn = np.clip(self.drive[1] * self.turn_gain, -1.0, 1.0)
+            fwd = np.clip((left + right) * 0.5 * self.drive_gain, 0.0, 1.0)
+            turn = np.clip((left - right) * self.turn_gain, -1.0, 1.0)
         return fwd, turn
 
     def compute_action(self, dt=None):
