@@ -30,7 +30,7 @@ class Go2VisualBridge:
     """
 
     def __init__(self, model, data, width=256, height=256,
-                 contrast_gain=0.6):
+                 contrast_gain=0.85):
         """
         Args:
             model: mujoco.MjModel

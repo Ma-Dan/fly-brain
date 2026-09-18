@@ -43,7 +43,7 @@ MAX_RATE = 200.0     # max rate for retina / lamina
 MI1_TONIC = 100.0    # Mi1 tonic baseline (modulated by L1 inhibition)
 TM_MAX = 80.0        # Tm1/Tm2 max (ON pathway)
 T2_MAX = 120.0       # T2 max (OFF pathway, drives LC4)
-CONTRAST_THRESH = 0.3  # min contrast to activate T2 (filters checkerboard noise)
+CONTRAST_THRESH = 0.2  # min contrast to activate T2 (filters checkerboard noise)
 NUM_OMMATIDIA = 721  # per eye in flygym
 
 
