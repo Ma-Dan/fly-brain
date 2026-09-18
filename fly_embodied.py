@@ -537,6 +537,8 @@ def main():
     prev_mode = 'walking'
     cached_visual = (None, None)  # cached ALL visual layer (indices, rates)
     last_vision_obs = None        # last vision obs for diagnostics
+    last_eye_left = None          # last raw RGB left-eye frame (monitor)
+    last_eye_right = None         # last raw RGB right-eye frame (monitor)
     physics_errors = 0            # consecutive physics error counter
 
     import time as _time
@@ -633,6 +635,7 @@ def main():
 
                 # Render both eyes with MuJoCo native renderer
                 readouts = []
+                raw_eyes = {}
                 for side in ["L", "R"]:
                     cid = eye_cam_ids.get(side, -1)
                     if cid < 0:
@@ -640,9 +643,12 @@ def main():
                         continue
                     eye_renderer.update_scene(data_ptr, camera=cid)
                     raw_img = eye_renderer.render()
+                    raw_eyes[side] = raw_img
                     fish_img = retina.correct_fisheye(raw_img)
                     hex_pxls = retina.raw_image_to_hex_pxls(fish_img)
                     readouts.append(hex_pxls)
+                last_eye_left = raw_eyes.get('L')
+                last_eye_right = raw_eyes.get('R')
 
                 # Restore self-geoms
                 for i, gid in enumerate(geom_hide_ids):
@@ -1024,6 +1030,10 @@ def main():
                         arena_kwargs.get('arena'), 'ball_pos', None)
                     if ball_pos is not None:
                         mon_data['ball_x'] = float(ball_pos[0])
+                    # Raw eye frames for monitor compound-eye panel
+                    if last_eye_left is not None:
+                        mon_data['eye_left'] = last_eye_left
+                        mon_data['eye_right'] = last_eye_right
                 if consciousness is not None:
                     mon_data.update(consciousness.get_monitor_data())
                 monitor.send(mon_data)

@@ -114,12 +114,12 @@ class Go2VisualBridge:
         return np.array(points, dtype=np.float32)  # (721, 2)
 
     def _render_eye(self, cam_id):
-        """Render a single eye camera and return grayscale image."""
+        """Render a single eye camera; return (grayscale, rgb)."""
         self._renderer.update_scene(self.data, camera=cam_id)
-        rgb = self._renderer.render()  # (H, W, 3) uint8
+        rgb = self._renderer.render()  # (H, W, 3) uint8 RGB
         # Convert to grayscale (luminance)
         gray = np.mean(rgb, axis=2).astype(np.float32) / 255.0  # (H, W), [0, 1]
-        return gray
+        return gray, rgb
 
     def _sample_ommatidia(self, gray_image):
         """
@@ -182,12 +182,16 @@ class Go2VisualBridge:
               [1, :, :] = right eye ommatidia
         """
         # Render left eye
-        gray_left = self._render_eye(self._cam_left_id)
+        gray_left, rgb_left = self._render_eye(self._cam_left_id)
         omm_left = self._sample_ommatidia(gray_left)
 
         # Render right eye
-        gray_right = self._render_eye(self._cam_right_id)
+        gray_right, rgb_right = self._render_eye(self._cam_right_id)
         omm_right = self._sample_ommatidia(gray_right)
+
+        # Cache raw RGB for optional external eye-view display
+        self.last_rgb_left = rgb_left
+        self.last_rgb_right = rgb_right
 
         # Stack: (2, 721, 2)
         vision_obs = np.stack([omm_left, omm_right], axis=0).astype(np.float32)
@@ -200,3 +204,8 @@ class Go2VisualBridge:
             vision_obs = mean_val + self.contrast_gain * (vision_obs - mean_val)
 
         return vision_obs
+
+    def get_eye_images(self):
+        """Return last-rendered (rgb_left, rgb_right) uint8 images or (None, None)."""
+        return (getattr(self, 'last_rgb_left', None),
+                getattr(self, 'last_rgb_right', None))

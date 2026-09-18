@@ -882,6 +882,56 @@ class BrainRenderer:
 
             y += bar_h + 8
 
+    # ── Compound Eye View Panel ─────────────────────────────────────────
+
+    EYE_PANEL_X = 10
+    EYE_PANEL_Y = 444
+    EYE_PANEL_SIZE = 120
+
+    def _draw_eye_panel(self):
+        """Draw raw left/right Go2 camera frames side-by-side in lower-left."""
+        d = self.data
+        pg = self.pg
+        left = d.get('eye_left')
+        right = d.get('eye_right')
+        if left is None or right is None:
+            return
+        try:
+            import numpy as np
+
+            def _to_surface(img):
+                arr = np.ascontiguousarray(img.transpose(1, 0, 2))
+                surf = pg.surfarray.make_surface(arr)
+                return pg.transform.smoothscale(
+                    surf, (self.EYE_PANEL_SIZE, self.EYE_PANEL_SIZE))
+            surf_l = _to_surface(left)
+            surf_r = _to_surface(right)
+        except Exception:
+            return
+
+        x0 = self.EYE_PANEL_X
+        y0 = self.EYE_PANEL_Y
+        size = self.EYE_PANEL_SIZE
+
+        # Panel background + border + header
+        panel_w = size * 2 + 8
+        panel_h = size + 24
+        pg.draw.rect(self.screen, (8, 10, 25),
+                     (x0 - 4, y0 - 20, panel_w + 8, panel_h))
+        pg.draw.rect(self.screen, (30, 40, 70),
+                     (x0 - 4, y0 - 20, panel_w + 8, panel_h), 1)
+        hdr = self.font_sm.render('COMPOUND EYE', True, COL_HUD)
+        self.screen.blit(hdr, (x0, y0 - 18))
+
+        # Eye frames
+        self.screen.blit(surf_l, (x0, y0))
+        self.screen.blit(surf_r, (x0 + size + 4, y0))
+
+        # L / R labels
+        for tag, bx in (('L', x0), ('R', x0 + size + 4)):
+            lbl = self.font_sm.render(tag, True, COL_VISUAL)
+            self.screen.blit(lbl, (bx + 2, y0 + size + 4))
+
     # ── Render Frame ──────────────────────────────────────────────────────
 
     def render_frame(self):
@@ -929,6 +979,9 @@ class BrainRenderer:
         # 10. Consciousness overlay (if data present)
         self._draw_consciousness()
         self._draw_consciousness_sidebar()
+
+        # 10b. Compound eye view panel (if eye frames present)
+        self._draw_eye_panel()
 
         # 11. Flip
         self.pg.display.flip()

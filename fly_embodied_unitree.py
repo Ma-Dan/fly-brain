@@ -417,6 +417,7 @@ def main():
                 sim.set_looming_ball(ball_pos)
 
                 vision_obs = go2_vision.process()
+
                 vis_idx, vis_rates = visual.process_visual_layers(vision_obs)
                 if vis_idx is not None:
                     cached_visual = (vis_idx, vis_rates)
@@ -570,6 +571,11 @@ def main():
                     ball_pos = sim.get_looming_ball_pos()
                     if ball_pos is not None:
                         mon_data['ball_x'] = float(ball_pos[0])
+                    # Raw eye frames for monitor compound-eye panel
+                    rgb_l, rgb_r = go2_vision.get_eye_images()
+                    if rgb_l is not None:
+                        mon_data['eye_left'] = rgb_l
+                        mon_data['eye_right'] = rgb_r
                     # Retina brightness (for monitor retina panel)
                     if last_vision_obs is not None:
                         mon_data['bright_left'] = float(np.mean(last_vision_obs[0]))
