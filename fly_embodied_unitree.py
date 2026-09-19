@@ -275,7 +275,8 @@ def main():
         # contact or inflate the leg count (dedup to the 4 real feet).
         gusto = GustatorySystem(
             brain.flyid2i, taste_zones,
-            derived_legs={'LM': ('LF', 'LH'), 'RM': ('RF', 'RH')})
+            derived_legs={'LM': ('LF', 'LH'), 'RM': ('RF', 'RH')},
+            ground_z_thresh=300.0)  # mm: Go2 foot proxy (calf body) sits ~190mm up
 
         # Place the taste-zone floor patches to match these zones (match
         # the fly LoomingArena visuals, dynamically positioned)
@@ -293,7 +294,7 @@ def main():
                 position=[-1500, -1200, 50],
                 odor_type='repulsive', amplitude=0.8, spread=2000, label='geosmin'),
         ]
-        olfact = OlfactorySystem(brain.flyid2i)
+        olfact = OlfactorySystem(brain.flyid2i, antenna_spread=100.0)  # mm: Go2 head width
         for src in odor_sources:
             print(f"  Odor: '{src.label}' ({src.odor_type}) at [{src.position[0]:.0f},{src.position[1]:.0f}]mm")
 

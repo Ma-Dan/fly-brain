@@ -66,9 +66,15 @@ class GustatorySystem:
     SUGAR_MAX_RATE = 200.0   # Hz
     BITTER_MAX_RATE = 250.0  # Hz
 
-    def __init__(self, flyid2i, zones, derived_legs=None):
+    def __init__(self, flyid2i, zones, derived_legs=None, ground_z_thresh=0.5):
         self.zones = zones
         self.flyid2i = flyid2i
+
+        # Ground contact threshold (mm): a foot with z above this is treated
+        # as lifted and does not taste. Default 0.5 mm is fly-scale; large
+        # bodies (Go2, whose foot proxy sits ~190 mm up) must pass a larger
+        # value so grounded feet are recognised.
+        self.GROUND_Z_THRESH = float(ground_z_thresh)
 
         # derived_legs: {leg_name: [parent_leg_names]} for legs that are
         # geometrically interpolated from real feet (e.g. Go2 phantom middle

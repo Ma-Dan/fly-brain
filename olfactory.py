@@ -78,8 +78,14 @@ class OlfactorySystem:
     # Repulsive escape threshold (normalized 0-1)
     REPULSION_ESCAPE_THRESH = 0.3
 
-    def __init__(self, flyid2i, annotations_path=None):
+    def __init__(self, flyid2i, annotations_path=None, antenna_spread=2.0):
         self.flyid2i = flyid2i
+
+        # Lateral antenna offset (mm) used for bilateral concentration
+        # comparison. Default 2.0 mm is fly-scale; large bodies (Go2) must
+        # pass a larger value (~head width) so the L/R concentration gradient
+        # is resolvable at their mm-scale world.
+        self.ANTENNA_SPREAD = float(antenna_spread)
 
         if annotations_path is None:
             annotations_path = Path(__file__).parent / 'data' / 'flywire_annotations.tsv'

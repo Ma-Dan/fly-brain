@@ -135,6 +135,12 @@ class Go2Adaptor:
         if mode == 'escape':
             fwd = np.clip((abs(left) + abs(right)) * 0.5 * self.drive_gain, 0.0, 1.0)
             turn = np.clip((left - right) * 2.0 * self.turn_gain, -1.0, 1.0)
+            # A looming threat straight ahead has no L/R cue (turn ≈ 0), but
+            # running straight forward would run *into* the approaching ball.
+            # Dodge by turning hard (veering off) instead of charging at it.
+            if abs(turn) < 0.2:
+                turn = 1.0
+                fwd = min(fwd, 0.5)
         elif mode in ('grooming', 'feeding'):
             fwd, turn = 0.0, 0.0
         else:
