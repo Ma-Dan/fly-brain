@@ -108,6 +108,9 @@ class Go2Sim:
         self._foot_positions = np.zeros((4, 3), dtype=np.float64)
         self._contact_forces = np.zeros(4, dtype=np.float64)
 
+        # Visual objects (taste zones / odor sources), hidden until placed
+        self._setup_visual_objects()
+
     def _detect_sensor_offsets(self):
         """Auto-detect sensor addresses by scanning sensor names."""
         self._imu_gyro_adr = -1
@@ -175,6 +178,104 @@ class Go2Sim:
             return self.data.qpos[self._ball_jnt_qpos_adr:
                                   self._ball_jnt_qpos_adr + 3].copy()
         return None
+
+    # ── Visual objects (taste zones / odor sources) ─────────────────────
+
+    _TASTE_ALPHA = 0.5
+    _ODOR_CORE_ALPHA = 0.7
+    _ODOR_HALO_ALPHA = 0.15
+
+    def _setup_visual_objects(self):
+        """Resolve placeholder geoms/materials; hide them by default."""
+        def _gid(name):
+            return mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, name)
+
+        def _mid(name):
+            return mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_MATERIAL, name)
+
+        self._taste_geom_ids = [_gid('taste_zone_0'), _gid('taste_zone_1')]
+        self._odor_core_ids = [_gid('odor_core_0'), _gid('odor_core_1')]
+        self._odor_halo_ids = [_gid('odor_halo_0'), _gid('odor_halo_1')]
+
+        self._mat_taste = {'sugar': _mid('taste_sugar'),
+                           'bitter': _mid('taste_bitter')}
+        self._mat_odor_core = {'attractive': _mid('odor_att_core'),
+                               'repulsive': _mid('odor_rep_core')}
+        self._mat_odor_halo = {'attractive': _mid('odor_att_halo'),
+                               'repulsive': _mid('odor_rep_halo')}
+
+        self._hide_taste()
+        self._hide_odor()
+
+    def _mids(self, dct):
+        return [m for m in dct.values() if m >= 0]
+
+    def _hide_taste(self):
+        for mid in self._mids(self._mat_taste):
+            self.model.mat_rgba[mid, 3] = 0.0
+
+    def _hide_odor(self):
+        for mid in self._mids(self._mat_odor_core) + self._mids(self._mat_odor_halo):
+            self.model.mat_rgba[mid, 3] = 0.0
+
+    def place_taste_zones(self, zones):
+        """Position/show taste-zone patches from TasteZone objects.
+
+        Args:
+            zones: sequence of objects with .center (x,y in mm), .radius (mm),
+                   .taste ('sugar' or 'bitter').
+        """
+        self._hide_taste()
+        for i, zone in enumerate(zones):
+            if i >= len(self._taste_geom_ids):
+                break
+            gid = self._taste_geom_ids[i]
+            if gid < 0:
+                continue
+            matid = self._mat_taste.get(getattr(zone, 'taste', 'sugar'), -1)
+            r = float(zone.radius) / 1000.0
+            self.model.geom_pos[gid] = [float(zone.center[0]) / 1000.0,
+                                        float(zone.center[1]) / 1000.0, 0.02]
+            self.model.geom_size[gid] = [r, 0.02, 0.0]
+            if matid >= 0:
+                self.model.geom_matid[gid] = matid
+                self.model.mat_rgba[matid, 3] = self._TASTE_ALPHA
+
+    def place_odor_sources(self, sources):
+        """Position/show odor-source orbs + halos from OdorSource objects.
+
+        Args:
+            sources: sequence of objects with .position (x,y,z in mm),
+                     .odor_type ('attractive'/'repulsive'), .spread (mm).
+        """
+        self._hide_odor()
+        for i, src in enumerate(sources):
+            if i >= len(self._odor_core_ids):
+                break
+            otype = getattr(src, 'odor_type', 'attractive')
+            pos = src.position
+            x = float(pos[0]) / 1000.0
+            y = float(pos[1]) / 1000.0
+            z = float(pos[2]) / 1000.0 if len(pos) > 2 else 0.3
+            halo_r = max(float(src.spread) / 1000.0 * 0.5, 0.3)
+            core_r = max(halo_r * 0.3, 0.15)
+
+            cgid = self._odor_core_ids[i]
+            hgid = self._odor_halo_ids[i]
+            cmat = self._mat_odor_core.get(otype, -1)
+            hmat = self._mat_odor_halo.get(otype, -1)
+            if cgid >= 0:
+                self.model.geom_pos[cgid] = [x, y, z]
+                self.model.geom_size[cgid] = [core_r, 0.0, 0.0]
+                if cmat >= 0:
+                    self.model.geom_matid[cgid] = cmat
+                    self.model.mat_rgba[cmat, 3] = self._ODOR_CORE_ALPHA
+            if hgid >= 0:
+                self.model.geom_pos[hgid] = [x, y, z]
+                self.model.geom_size[hgid] = [halo_r, 0.0, 0.0]
+                if hmat >= 0:
+                    self.model.geom_matid[hgid] = hmat
+                    self.model.mat_rgba[hmat, 3] = self._ODOR_HALO_ALPHA
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 

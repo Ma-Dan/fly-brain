@@ -262,10 +262,12 @@ def main():
     gusto = None
     if args.gustatory and brain is not None:
         print("Initializing gustatory system (sugar/bitter zones)...")
+        # Positions are in mm — the gustatory/olfactory systems and the
+        # Go2 -> fly adapters all work in mm (sim.position * 1000).
         taste_zones = [
-            TasteZone(center=[1.5, 0.5], radius=0.8,
+            TasteZone(center=[1500, 500], radius=800,
                       taste='sugar', label='sugar_patch'),
-            TasteZone(center=[2.0, -1.0], radius=0.6,
+            TasteZone(center=[2000, -1000], radius=600,
                       taste='bitter', label='bitter_patch'),
         ]
         # Go2 has 4 real feet; LM/RM are geometric midpoints (phantom legs).
@@ -275,21 +277,29 @@ def main():
             brain.flyid2i, taste_zones,
             derived_legs={'LM': ('LF', 'LH'), 'RM': ('RF', 'RH')})
 
+        # Place the taste-zone floor patches to match these zones (match
+        # the fly LoomingArena visuals, dynamically positioned)
+        sim.place_taste_zones(taste_zones)
+
     olfact = None
     odor_sources = []
     if args.olfactory and brain is not None:
         print("Initializing olfactory system (Or42b + Or56a)...")
         odor_sources = [
             OdorSource(
-                position=[2.5, 1.0, 0.05],
-                odor_type='attractive', amplitude=0.9, spread=2.5, label='food'),
+                position=[2500, 1000, 50],
+                odor_type='attractive', amplitude=0.9, spread=2500, label='food'),
             OdorSource(
-                position=[-1.5, -1.2, 0.05],
-                odor_type='repulsive', amplitude=0.8, spread=2.0, label='geosmin'),
+                position=[-1500, -1200, 50],
+                odor_type='repulsive', amplitude=0.8, spread=2000, label='geosmin'),
         ]
         olfact = OlfactorySystem(brain.flyid2i)
         for src in odor_sources:
-            print(f"  Odor: '{src.label}' ({src.odor_type}) at [{src.position[0]:.1f},{src.position[1]:.1f}]m")
+            print(f"  Odor: '{src.label}' ({src.odor_type}) at [{src.position[0]:.0f},{src.position[1]:.0f}]mm")
+
+        # Place the odor-source orbs + halos to match these sources (match
+        # the fly LoomingArena visuals, dynamically positioned)
+        sim.place_odor_sources(odor_sources)
 
     # ── Initialize Consciousness ───────────────────────────────────────
     consciousness = None
