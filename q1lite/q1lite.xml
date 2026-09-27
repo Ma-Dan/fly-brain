@@ -1,0 +1,132 @@
+<mujoco model="q1lite">
+  <!--
+    Q1 Lite 3 (Jason Workshop) - 8-DOF spider quadruped
+    Forward = +Y (head side, "F" legs), right = +X, up = +Z.
+
+    Kinematics (confirmed by the official firmware servo roles):
+      hip  = YAW about Z (inboard servos P03/P05/P08/P11) - swings foot fore/aft
+      knee = LIFT about Y (corner servos P02/P15/P07/P16) - raises/lowers foot
+    Upper leg extends along local +X (45mm), lower leg hangs down (47mm).
+
+    Leg frames: RIGHT legs (FR/RR) have local +X = world +X (servo zero = sprawl
+    toward +X).  LEFT legs (FL/RL) are rotated 180 deg about Z (quat "0 0 0 1")
+    so their local +X = world -X (servo zero = sprawl toward -X).
+    The assembled robot.stl is C2-symmetric: FL = Rz(180) of RR, RL = Rz(180) of FR,
+    so the left-leg mesh placements are copied verbatim from the diagonal partner.
+
+    Standby pose (= official firmware servoPrg01, hips all 90 deg servo):
+      FR +45 deg, RR -45 deg, FL -45 deg, RL +45 deg (local), knees 0 (feet down)
+  -->
+  <compiler angle="radian" meshdir="." autolimits="true"/>
+  <option impratio="10" cone="elliptic" solver="Newton" iterations="100"/>
+  <visual><global offwidth="1280" offheight="720"/></visual>
+
+  <default>
+    <geom friction="0.8 0.01 0.01" condim="3" margin="0.001"/>
+    <joint damping="0.02" armature="0.002" frictionloss="0.05"/>
+    <motor ctrlrange="-0.25 0.25"/>
+    <default class="visual"><geom type="mesh" group="2" contype="0" conaffinity="0"/></default>
+    <default class="collision"><geom group="3"/></default>
+    <default class="foot"><geom type="box" size="0.007 0.005 0.003" group="3" priority="2" solimp="0.9 0.99 0.001" friction="1.5 0.1 0.01" condim="3"/></default>
+  </default>
+
+  <asset>
+    <material name="body_color" rgba="0.85 0.35 0.30 1"/>
+    <material name="leg_color"  rgba="0.25 0.45 0.60 1"/>
+    <material name="foot_color" rgba="0.15 0.15 0.18 1"/>
+    <mesh name="body"  file="body.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="leg1"  file="leg1.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="leg1m" file="leg1_mirror.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="leg2"  file="leg2.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="leg2m" file="leg2_mirror.stl" scale="0.001 0.001 0.001"/>
+  </asset>
+
+  <worldbody>
+    <light directional="true" diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2" pos="0 0 1" dir="0 0 -1"/>
+    <geom name="floor" type="plane" size="1 1 0.05" rgba="0.35 0.38 0.42 1"/>
+
+    <body name="base" pos="0 0 0.044">
+      <freejoint/>
+      <inertial mass="0.080" pos="0 0 0.003" diaginertia="0.00006 0.00005 0.00009"/>
+      <geom mesh="body" material="body_color" class="visual"/>
+      <geom type="box" size="0.038 0.033 0.005" class="collision" pos="0 0 0.005"/>
+      <camera name="eye" mode="targetbody" target="base" pos="0 -0.22 0.22" fovy="50"/>
+
+      <!-- ================= RIGHT legs (validated correct - unchanged) ================= -->
+      <body name="FR_shoulder" pos="0.026000 0.021000 0.006000">
+        <joint name="FR_hip_joint" axis="0 0 1" range="-1.7 1.7"/>
+        <inertial mass="0.018" pos="0.022500 0 0" diaginertia="0.000008 0.000008 0.000002"/>
+        <geom mesh="leg1m" material="leg_color" class="visual" quat="0.382700 0.923900 0.000000 0.000000" pos="0.028000 -0.009000 0.029000"/>
+        <geom type="capsule" fromto="0 0 0 0.045000 0 0" size="0.009" class="collision"/>
+        <body name="FR_upper" pos="0.045000 0 0">
+          <joint name="FR_knee_joint" axis="0 1 0" range="-1.6 1.6"/>
+          <inertial mass="0.006" pos="0 0 -0.022" diaginertia="0.000006 0.000006 0.000001"/>
+          <geom mesh="leg2" material="foot_color" class="visual" quat="0.270600 -0.270600 0.653300 0.653300" pos="0.004000 -0.006000 -0.013000"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.040" size="0.007" class="collision"/>
+          <geom class="foot" pos="0 0 -0.047"/>
+        </body>
+      </body>
+
+      <body name="RR_shoulder" pos="0.026000 -0.021000 0.006000">
+        <joint name="RR_hip_joint" axis="0 0 1" range="-1.7 1.7"/>
+        <inertial mass="0.018" pos="0.022500 0 0" diaginertia="0.000008 0.000008 0.000002"/>
+        <geom mesh="leg1" material="leg_color" class="visual" quat="0.382700 -0.923900 0.000000 0.000000" pos="0.029000 -0.014000 0.006000"/>
+        <geom type="capsule" fromto="0 0 0 0.045000 0 0" size="0.009" class="collision"/>
+        <body name="RR_upper" pos="0.045000 0 0">
+          <joint name="RR_knee_joint" axis="0 1 0" range="-1.6 1.6"/>
+          <inertial mass="0.006" pos="0 0 -0.022" diaginertia="0.000006 0.000006 0.000001"/>
+          <geom mesh="leg2m" material="foot_color" class="visual" quat="0.653300 0.653300 -0.270600 0.270600" pos="0.004000 0.006000 -0.013000"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.040" size="0.007" class="collision"/>
+          <geom class="foot" pos="0 0 -0.047"/>
+        </body>
+      </body>
+
+      <!-- ================= LEFT legs (fixed) =================
+           Frame rotated 180 deg about Z: local +X = world -X (servo zero sprawl).
+           Mesh placements copied verbatim from the diagonal partner
+           (FL <- RR, RL <- FR) because the assembly is C2-symmetric.      -->
+      <body name="FL_shoulder" pos="-0.026000 0.021000 0.006000" quat="0 0 0 1">
+        <joint name="FL_hip_joint" axis="0 0 1" range="-1.7 1.7"/>
+        <inertial mass="0.018" pos="0.022500 0 0" diaginertia="0.000008 0.000008 0.000002"/>
+        <geom mesh="leg1" material="leg_color" class="visual" quat="0.382700 -0.923900 0.000000 0.000000" pos="0.029000 -0.014000 0.006000"/>
+        <geom type="capsule" fromto="0 0 0 0.045000 0 0" size="0.009" class="collision"/>
+        <body name="FL_upper" pos="0.045000 0 0">
+          <joint name="FL_knee_joint" axis="0 1 0" range="-1.6 1.6"/>
+          <inertial mass="0.006" pos="0 0 -0.022" diaginertia="0.000006 0.000006 0.000001"/>
+          <geom mesh="leg2m" material="foot_color" class="visual" quat="0.653300 0.653300 -0.270600 0.270600" pos="0.004000 0.006000 -0.013000"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.040" size="0.007" class="collision"/>
+          <geom class="foot" pos="0 0 -0.047"/>
+        </body>
+      </body>
+
+      <body name="RL_shoulder" pos="-0.026000 -0.021000 0.006000" quat="0 0 0 1">
+        <joint name="RL_hip_joint" axis="0 0 1" range="-1.7 1.7"/>
+        <inertial mass="0.018" pos="0.022500 0 0" diaginertia="0.000008 0.000008 0.000002"/>
+        <geom mesh="leg1m" material="leg_color" class="visual" quat="0.382700 0.923900 0.000000 0.000000" pos="0.028000 -0.009000 0.029000"/>
+        <geom type="capsule" fromto="0 0 0 0.045000 0 0" size="0.009" class="collision"/>
+        <body name="RL_upper" pos="0.045000 0 0">
+          <joint name="RL_knee_joint" axis="0 1 0" range="-1.6 1.6"/>
+          <inertial mass="0.006" pos="0 0 -0.022" diaginertia="0.000006 0.000006 0.000001"/>
+          <geom mesh="leg2" material="foot_color" class="visual" quat="0.270600 -0.270600 0.653300 0.653300" pos="0.004000 -0.006000 -0.013000"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.040" size="0.007" class="collision"/>
+          <geom class="foot" pos="0 0 -0.047"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="FR_hip" joint="FR_hip_joint"/><motor name="FR_knee" joint="FR_knee_joint"/>
+    <motor name="RR_hip" joint="RR_hip_joint"/><motor name="RR_knee" joint="RR_knee_joint"/>
+    <motor name="FL_hip" joint="FL_hip_joint"/><motor name="FL_knee" joint="FL_knee_joint"/>
+    <motor name="RL_hip" joint="RL_hip_joint"/><motor name="RL_knee" joint="RL_knee_joint"/>
+  </actuator>
+
+  <keyframe>
+    <!-- standby (official firmware pose): FR +45, RR -45, FL -45, RL +45 deg, knees 0
+         qpos order: FR_hip FR_knee  RR_hip RR_knee  FL_hip FL_knee  RL_hip RL_knee -->
+    <key name="stand" qpos="0 0 0.044 1 0 0 0  0.785 0  -0.785 0  -0.785 0  0.785 0"/>
+    <!-- model zero: all servos at zero (legs sprawl along +/-X, lower legs vertical) -->
+    <key name="zero" qpos="0 0 0.044 1 0 0 0  0 0 0 0 0 0 0 0"/>
+  </keyframe>
+</mujoco>
