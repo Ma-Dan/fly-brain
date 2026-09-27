@@ -192,9 +192,11 @@ class Q1LiteSim:
                 continue
             matid = self._mat_taste.get(getattr(zone, 'taste', 'sugar'), -1)
             r = float(zone.radius) / 1000.0
+            # Thin glowing floor tile (8mm thick) — the Go2's 40mm-thick
+            # slab would be a light wall next to this 44mm-tall robot.
             self.model.geom_pos[gid] = [float(zone.center[0]) / 1000.0,
-                                        float(zone.center[1]) / 1000.0, 0.02]
-            self.model.geom_size[gid] = [r, 0.02, 0.0]
+                                        float(zone.center[1]) / 1000.0, 0.004]
+            self.model.geom_size[gid] = [r, 0.004, 0.0]
             if matid >= 0:
                 self.model.geom_matid[gid] = matid
                 self.model.mat_rgba[matid, 3] = self._TASTE_ALPHA
@@ -215,8 +217,10 @@ class Q1LiteSim:
             x = float(pos[0]) / 1000.0
             y = float(pos[1]) / 1000.0
             z = float(pos[2]) / 1000.0 if len(pos) > 2 else 0.3
-            halo_r = max(float(src.spread) / 1000.0 * 0.5, 0.3)
-            core_r = max(halo_r * 0.3, 0.15)
+            # Q1 Lite-scaled floors: the Go2's 0.3m halo / 0.15m core
+            # floors are larger than this 157mm-diagonal robot.
+            halo_r = max(float(src.spread) / 1000.0 * 0.5, 0.08)
+            core_r = max(halo_r * 0.3, 0.04)
 
             cgid = self._odor_core_ids[i]
             hgid = self._odor_halo_ids[i]

@@ -262,10 +262,10 @@ def main():
         somato = SomatosensorySystem(brain.flyid2i)
         vibration_sources = [
             VibrationSource(
-                position=[250, 150, 5],
+                position=[320, 200, 5],
                 frequency=200.0, amplitude=0.8, label='courtship'),
             VibrationSource(
-                position=[-180, -120, 5],
+                position=[-230, -160, 5],
                 frequency=400.0, amplitude=0.6, label='alarm'),
         ]
         for vs in vibration_sources:
@@ -278,9 +278,9 @@ def main():
         # Positions are in mm — the gustatory/olfactory systems and the
         # Q1 Lite -> fly adapters all work in mm (sim.position * 1000).
         taste_zones = [
-            TasteZone(center=[80, 200], radius=100,
+            TasteZone(center=[110, 260], radius=100,
                       taste='sugar', label='sugar_patch'),
-            TasteZone(center=[250, -150], radius=80,
+            TasteZone(center=[320, -200], radius=80,
                       taste='bitter', label='bitter_patch'),
         ]
         # Q1 Lite has 4 real feet; LM/RM are geometric midpoints (phantom legs).
@@ -301,10 +301,10 @@ def main():
         print("Initializing olfactory system (Or42b + Or56a)...")
         odor_sources = [
             OdorSource(
-                position=[250, 100, 5],
+                position=[380, 150, 5],
                 odor_type='attractive', amplitude=0.9, spread=250, label='food'),
             OdorSource(
-                position=[-150, -120, 5],
+                position=[-260, -210, 5],
                 odor_type='repulsive', amplitude=0.8, spread=200, label='geosmin'),
         ]
         olfact = OlfactorySystem(brain.flyid2i, antenna_spread=40.0)  # mm: Q1 Lite head width
@@ -436,12 +436,13 @@ def main():
                          and not args.no_vision)
             if do_vision:
                 # Move looming ball toward robot along +Y (forward).
-                # Q1 Lite-scaled approach: 0.12 m/s, 1.25m -> 0.25m sawtooth
-                # (min distance keeps the eyes outside the ball surface),
-                # ball resting on the floor (z = radius = 0.15m).
-                ball_dist = 1.25 - (step * PHYSICS_DT * 0.12) % 1.0
+                # Robot-proportioned ball (r=50mm ~= 1/3 of the 157mm
+                # stand diagonal, center at eye height z=50mm): approaches
+                # at 0.04 m/s (~2x walking speed), 0.6m -> 0.12m sawtooth
+                # (min distance keeps the eyes outside the ball surface).
+                ball_dist = 0.6 - (step * PHYSICS_DT * 0.04) % 0.48
                 ball_pos = np.array([sim.position[0],
-                                     sim.position[1] + ball_dist, 0.15])
+                                     sim.position[1] + ball_dist, 0.05])
                 sim.set_looming_ball(ball_pos)
 
                 vision_obs = q1lite_vision.process()
