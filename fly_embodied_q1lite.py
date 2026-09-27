@@ -35,7 +35,9 @@ from brain_body_bridge import (
 )
 from q1lite_bridge.q1lite_sim import Q1LiteSim
 from q1lite_bridge.q1lite_adaptor import Q1LiteAdaptor, QuadCPG
+from q1lite_bridge.q1lite_vision import Q1LiteVisualBridge
 
+from visual_system import VisualSystem
 from somatosensory import SomatosensorySystem, VibrationSource
 from gustatory import GustatorySystem, TasteZone
 from olfactory import OlfactorySystem, OdorSource
@@ -171,6 +173,10 @@ def main():
                         help='Enable taste zones (sugar/bitter)')
     parser.add_argument('--olfactory', action='store_true',
                         help='Enable olfactory (attractive/repulsive odors)')
+    parser.add_argument('--visual', action='store_true',
+                        help='Enable camera vision: Q1 Lite eyes → T2 → LC4 → GF escape')
+    parser.add_argument('--no-vision', action='store_true',
+                        help='Disable visual rendering (faster, brain-only)')
     parser.add_argument('--consciousness', action='store_true',
                         help='Enable consciousness proxy measurement')
     parser.add_argument('--mlx', action='store_true',
@@ -234,6 +240,19 @@ def main():
     sim = Q1LiteSim(str(_Q1LITE_SCENE), timestep=0.001)
     sim.reset()
     print(f"Q1 Lite: {sim.model.nu} actuators, standing at z={sim.position[2]:.3f}m")
+
+    # ── Initialize Visual System ─────────────────────────────────────────
+    visual = None
+    cached_visual = (None, None)
+    last_vision_obs = None
+    VISION_RATIO = 500  # process vision every 500 physics steps (500ms)
+    if args.visual and brain is not None:
+        print("Initializing visual system (Q1 Lite eyes → T2 → LC4 → GF)...")
+        q1lite_vision = Q1LiteVisualBridge(sim.model, sim.data, width=128, height=128)
+        visual = VisualSystem(brain.flyid2i, brain.i2flyid)
+        print(f"  T2 neurons: {visual._n_T2 if hasattr(visual, '_n_T2') else '?'} "
+              f"LC4: {sum(len(v) for v in visual.get_lc4_indices(brain.flyid2i).values())} "
+              f"LPLC2: {sum(len(v) for v in visual.get_lplc2_indices(brain.flyid2i).values())}")
 
     # ── Initialize Sensory Systems ─────────────────────────────────────
     somato = None
@@ -323,6 +342,14 @@ def main():
             brain.register_population('JO_sound_R', somato.sound_idx_right)
             decoder.register_population('JO_sound_R')
 
+    # Register LPLC2/LC4 populations for directional escape
+    if args.visual and visual is not None:
+        lplc2_idx = visual.get_lplc2_indices(brain.flyid2i)
+        lc4_idx = visual.get_lc4_indices(brain.flyid2i)
+        for name, indices in {**lplc2_idx, **lc4_idx}.items():
+            brain.register_population(name, indices)
+            decoder.register_population(name)
+
     # ── Set initial stimulus ───────────────────────────────────────────
     if brain is not None:
         brain.set_stimulus(active_stimulus[0])
@@ -400,6 +427,41 @@ def main():
             if stim_changed[0] and brain is not None:
                 brain.set_stimulus(active_stimulus[0])
                 stim_changed[0] = False
+                # Re-apply cached visual rates (set_stimulus zeroes all rates)
+                if cached_visual[0] is not None:
+                    brain.set_visual_rates(*cached_visual)
+
+            # ── Visual processing (every VISION_RATIO steps) ──────────
+            do_vision = (args.visual and visual is not None and step % VISION_RATIO == 0
+                         and not args.no_vision)
+            if do_vision:
+                # Move looming ball toward robot along +Y (forward).
+                # Q1 Lite-scaled approach: 0.12 m/s, 1.25m -> 0.25m sawtooth
+                # (min distance keeps the eyes outside the ball surface),
+                # ball resting on the floor (z = radius = 0.15m).
+                ball_dist = 1.25 - (step * PHYSICS_DT * 0.12) % 1.0
+                ball_pos = np.array([sim.position[0],
+                                     sim.position[1] + ball_dist, 0.15])
+                sim.set_looming_ball(ball_pos)
+
+                vision_obs = q1lite_vision.process()
+
+                vis_idx, vis_rates = visual.process_visual_layers(vision_obs)
+                if vis_idx is not None:
+                    cached_visual = (vis_idx, vis_rates)
+                    brain.set_visual_rates(vis_idx, vis_rates)
+                # Cache vision_obs for monitor retina display
+                last_vision_obs = vision_obs
+                # Per-eye T2 fallback for directional threat bias
+                if cached_visual[1] is not None and hasattr(visual, '_T2_eye'):
+                    vis_eye = visual._T2_eye
+                    vis_r = cached_visual[1]
+                    mask_L = vis_eye == 0
+                    mask_R = vis_eye == 1
+                    t2_left = float(np.mean(vis_r[mask_L])) if mask_L.any() else 0.0
+                    t2_right = float(np.mean(vis_r[mask_R])) if mask_R.any() else 0.0
+                    adaptor.bridge.visual_threat_bias = (
+                        (t2_right - t2_left) / (t2_left + t2_right + 1e-6))
 
             # ── Sensory processing (every brain interval) ───────────
             if step % BRAIN_RATIO == 0:
@@ -518,6 +580,38 @@ def main():
                 if olfact is not None:
                     mon_data['or_attractive'] = olfact.attractive_level
                     mon_data['or_repulsive'] = olfact.repulsive_level
+                # Visual data
+                if args.visual and visual is not None:
+                    mon_data['lplc2_left'] = d.get_pop_rate('LPLC2_left')
+                    mon_data['lplc2_right'] = d.get_pop_rate('LPLC2_right')
+                    mon_data['lc4_left'] = d.get_pop_rate('LC4_left')
+                    mon_data['lc4_right'] = d.get_pop_rate('LC4_right')
+                    mon_data['threat_asym'] = adaptor.bridge.threat_asym
+                    if cached_visual[1] is not None and hasattr(visual, '_T2_eye'):
+                        vis_eye = visual._T2_eye
+                        vis_r = cached_visual[1]
+                        mask_L = vis_eye == 0
+                        mask_R = vis_eye == 1
+                        mon_data['t2_left'] = float(
+                            np.mean(vis_r[mask_L]) / 120.0) if mask_L.any() else 0.0
+                        mon_data['t2_right'] = float(
+                            np.mean(vis_r[mask_R]) / 120.0) if mask_R.any() else 0.0
+                    ball_pos = sim.get_looming_ball_pos()
+                    if ball_pos is not None:
+                        mon_data['ball_x'] = float(ball_pos[1])  # forward axis = +Y
+                    # Raw eye frames for monitor compound-eye panel
+                    rgb_l, rgb_r = q1lite_vision.get_eye_images()
+                    if rgb_l is not None:
+                        mon_data['eye_left'] = rgb_l
+                        mon_data['eye_right'] = rgb_r
+                    # Retina brightness (for monitor retina panel)
+                    if last_vision_obs is not None:
+                        mon_data['bright_left'] = float(np.mean(last_vision_obs[0]))
+                        mon_data['bright_right'] = float(np.mean(last_vision_obs[1]))
+                        mon_data['dark_omm_left'] = int(np.sum(
+                            np.mean(last_vision_obs[0], axis=1) < 0.25))
+                        mon_data['dark_omm_right'] = int(np.sum(
+                            np.mean(last_vision_obs[1], axis=1) < 0.25))
                 # Consciousness data
                 if consciousness is not None:
                     mon_data.update(consciousness.get_monitor_data())

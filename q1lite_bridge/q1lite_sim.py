@@ -96,9 +96,11 @@ class Q1LiteSim:
         # Visual objects (taste zones / odor sources), hidden until placed
         self._setup_visual_objects()
 
-        # Looming ball body/joint IDs (absent in the Q1 Lite scene -> no-op)
+        # Looming ball body/joint IDs (present in q1lite/scene.xml;
+        # tolerant no-op if the model has no ball)
         self._ball_body_id = -1
         self._ball_jnt_qpos_adr = -1
+        self._ball_jnt_dof_adr = -1
         try:
             self._ball_body_id = mujoco.mj_name2id(
                 self.model, mujoco.mjtObj.mjOBJ_BODY, 'looming_ball')
@@ -106,6 +108,7 @@ class Q1LiteSim:
                 self.model, mujoco.mjtObj.mjOBJ_JOINT, 'looming_ball_joint')
             if ball_jnt >= 0:
                 self._ball_jnt_qpos_adr = int(self.model.jnt_qposadr[ball_jnt])
+                self._ball_jnt_dof_adr = int(self.model.jnt_dofadr[ball_jnt])
         except Exception:
             pass  # no looming ball in scene
 
@@ -233,11 +236,24 @@ class Q1LiteSim:
                     self.model.mat_rgba[hmat, 3] = self._ODOR_HALO_ALPHA
 
     def set_looming_ball(self, pos, size=None):
-        """Move the looming ball to a world position (no-op without ball)."""
+        """Move the looming ball to a world position (no-op without ball).
+
+        Supports both ball variants: a freejoint ball (teleported via
+        qpos, velocity zeroed so gravity can't accumulate fall speed)
+        and a static worldbody ball (moved via model.body_pos). Both
+        call mj_forward so renders see the new position immediately.
+        """
         if self._ball_jnt_qpos_adr >= 0:
             adr = self._ball_jnt_qpos_adr
             self.data.qpos[adr:adr + 3] = pos
             self.data.qpos[adr + 3:adr + 7] = [1, 0, 0, 0]  # identity quat
+            if self._ball_jnt_dof_adr >= 0:
+                self.data.qvel[self._ball_jnt_dof_adr:
+                               self._ball_jnt_dof_adr + 6] = 0.0
+            mujoco.mj_forward(self.model, self.data)
+        elif self._ball_body_id >= 0:
+            self.model.body_pos[self._ball_body_id] = pos
+            mujoco.mj_forward(self.model, self.data)
         if size is not None and self._ball_body_id >= 0:
             geom_id = self.model.body_geomadr[self._ball_body_id]
             if geom_id >= 0:
@@ -245,9 +261,8 @@ class Q1LiteSim:
 
     def get_looming_ball_pos(self):
         """Get current looming ball position or None if not present."""
-        if self._ball_jnt_qpos_adr >= 0:
-            return self.data.qpos[self._ball_jnt_qpos_adr:
-                                  self._ball_jnt_qpos_adr + 3].copy()
+        if self._ball_body_id >= 0:
+            return self.data.xpos[self._ball_body_id].copy()
         return None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────

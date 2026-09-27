@@ -1,39 +1,49 @@
 <mujoco model="q1lite_scene">
   <!--
-    Brain-body scene for Q1 Lite: robot + sensory arena decorations.
-
-    The robot definition lives in q1lite.xml (included unchanged).
-    This wrapper adds the placeholder geoms/materials that
-    Q1LiteSim.place_taste_zones / place_odor_sources position and reveal
-    at runtime (same naming scheme as the Go2 scene). All placeholders
-    start hidden below the floor and are non-colliding.
+    Brain-body scene for Q1 Lite — mirrors the Go2 scene environment
+    (unitree_go2/scene.xml): skybox, sun with shadows, glowing taste/odor
+    markers and a looming threat ball, on the infinite checker ground
+    defined in q1lite.xml. Placeholders are positioned/revealed at
+    runtime by Q1LiteSim.place_taste_zones / place_odor_sources; the
+    looming ball is teleported along +Y (forward) by the vision loop.
   -->
   <include file="q1lite.xml"/>
 
+  <visual>
+    <headlight diffuse="0.7 0.7 0.65" ambient="0.35 0.35 0.4" specular="0.3 0.3 0.3"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-130" elevation="-20"/>
+  </visual>
+
   <asset>
-    <material name="taste_sugar"   rgba="0.20 0.90 0.40 0.0"/>
-    <material name="taste_bitter"  rgba="0.75 0.15 0.15 0.0"/>
-    <material name="odor_att_core" rgba="0.95 0.80 0.20 0.0"/>
-    <material name="odor_rep_core" rgba="0.60 0.20 0.80 0.0"/>
-    <material name="odor_att_halo" rgba="0.95 0.80 0.20 0.0"/>
-    <material name="odor_rep_halo" rgba="0.60 0.20 0.80 0.0"/>
+    <texture type="skybox" builtin="gradient" rgb1="0.35 0.55 0.8" rgb2="0.85 0.9 1.0" width="512" height="3072"/>
+
+    <!-- Taste zones: glowing floor patches (match LoomingArena) -->
+    <material name="taste_sugar" rgba="0.15 0.75 0.15 0.5" emission="0.3" reflectance="0.15"/>
+    <material name="taste_bitter" rgba="0.75 0.12 0.12 0.5" emission="0.3" reflectance="0.15"/>
+    <!-- Odor sources: glowing spheres + translucent halos -->
+    <material name="odor_att_core" rgba="0.2 0.85 0.3 0.7" emission="0.5"/>
+    <material name="odor_att_halo" rgba="0.2 0.85 0.3 0.15" emission="0.8"/>
+    <material name="odor_rep_core" rgba="0.85 0.2 0.85 0.7" emission="0.5"/>
+    <material name="odor_rep_halo" rgba="0.85 0.2 0.85 0.15" emission="0.8"/>
   </asset>
 
   <worldbody>
-    <!-- Taste-zone floor patches (positioned at runtime) -->
-    <geom name="taste_zone_0" type="cylinder" size="0.1 0.005" pos="0 0 -1"
-          group="1" contype="0" conaffinity="0"/>
-    <geom name="taste_zone_1" type="cylinder" size="0.1 0.005" pos="0 0 -1"
-          group="1" contype="0" conaffinity="0"/>
+    <light name="sun" pos="0 0 15" dir="0.4 0.3 -1" diffuse="1.0 0.95 0.85" specular="0.5 0.5 0.4" castshadow="true" directional="true"/>
 
-    <!-- Odor-source orbs + halos (positioned at runtime) -->
-    <geom name="odor_core_0" type="sphere" size="0.05" pos="0 0 -1"
-          group="1" contype="0" conaffinity="0"/>
-    <geom name="odor_core_1" type="sphere" size="0.05" pos="0 0 -1"
-          group="1" contype="0" conaffinity="0"/>
-    <geom name="odor_halo_0" type="sphere" size="0.2" pos="0 0 -1"
-          group="1" contype="0" conaffinity="0"/>
-    <geom name="odor_halo_1" type="sphere" size="0.2" pos="0 0 -1"
-          group="1" contype="0" conaffinity="0"/>
+    <!-- Visual-object placeholders (positioned dynamically by Q1LiteSim.place_*) -->
+    <geom name="taste_zone_0" type="cylinder" size="0.01 0.02" pos="0 0 -10" material="taste_sugar" contype="0" conaffinity="0"/>
+    <geom name="taste_zone_1" type="cylinder" size="0.01 0.02" pos="0 0 -10" material="taste_bitter" contype="0" conaffinity="0"/>
+    <geom name="odor_core_0" type="sphere" size="0.3" pos="0 0 -10" material="odor_att_core" contype="0" conaffinity="0"/>
+    <geom name="odor_halo_0" type="sphere" size="0.8" pos="0 0 -10" material="odor_att_halo" contype="0" conaffinity="0"/>
+    <geom name="odor_core_1" type="sphere" size="0.3" pos="0 0 -10" material="odor_rep_core" contype="0" conaffinity="0"/>
+    <geom name="odor_halo_1" type="sphere" size="0.8" pos="0 0 -10" material="odor_rep_halo" contype="0" conaffinity="0"/>
+
+    <!-- Looming threat ball: STATIC worldbody child (no joint) so the
+         robot-file keyframes stay valid for standalone loads; repositioned
+         along +Y at runtime by Q1LiteSim.set_looming_ball. -->
+    <body name="looming_ball" pos="0 1.2 0.15">
+      <geom name="looming_ball_geom" type="sphere" size="0.15" rgba="0.05 0.05 0.08 1"/>
+    </body>
   </worldbody>
 </mujoco>
