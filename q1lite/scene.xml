@@ -1,0 +1,39 @@
+<mujoco model="q1lite_scene">
+  <!--
+    Brain-body scene for Q1 Lite: robot + sensory arena decorations.
+
+    The robot definition lives in q1lite.xml (included unchanged).
+    This wrapper adds the placeholder geoms/materials that
+    Q1LiteSim.place_taste_zones / place_odor_sources position and reveal
+    at runtime (same naming scheme as the Go2 scene). All placeholders
+    start hidden below the floor and are non-colliding.
+  -->
+  <include file="q1lite.xml"/>
+
+  <asset>
+    <material name="taste_sugar"   rgba="0.20 0.90 0.40 0.0"/>
+    <material name="taste_bitter"  rgba="0.75 0.15 0.15 0.0"/>
+    <material name="odor_att_core" rgba="0.95 0.80 0.20 0.0"/>
+    <material name="odor_rep_core" rgba="0.60 0.20 0.80 0.0"/>
+    <material name="odor_att_halo" rgba="0.95 0.80 0.20 0.0"/>
+    <material name="odor_rep_halo" rgba="0.60 0.20 0.80 0.0"/>
+  </asset>
+
+  <worldbody>
+    <!-- Taste-zone floor patches (positioned at runtime) -->
+    <geom name="taste_zone_0" type="cylinder" size="0.1 0.005" pos="0 0 -1"
+          group="1" contype="0" conaffinity="0"/>
+    <geom name="taste_zone_1" type="cylinder" size="0.1 0.005" pos="0 0 -1"
+          group="1" contype="0" conaffinity="0"/>
+
+    <!-- Odor-source orbs + halos (positioned at runtime) -->
+    <geom name="odor_core_0" type="sphere" size="0.05" pos="0 0 -1"
+          group="1" contype="0" conaffinity="0"/>
+    <geom name="odor_core_1" type="sphere" size="0.05" pos="0 0 -1"
+          group="1" contype="0" conaffinity="0"/>
+    <geom name="odor_halo_0" type="sphere" size="0.2" pos="0 0 -1"
+          group="1" contype="0" conaffinity="0"/>
+    <geom name="odor_halo_1" type="sphere" size="0.2" pos="0 0 -1"
+          group="1" contype="0" conaffinity="0"/>
+  </worldbody>
+</mujoco>
