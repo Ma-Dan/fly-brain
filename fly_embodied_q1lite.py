@@ -142,6 +142,10 @@ def main():
                         help='Use MLX (Apple Silicon Metal) brain backend instead of PyTorch')
     parser.add_argument('--fast', action='store_true',
                         help='Speed mode: skip Hebbian plasticity, fewer brain substeps')
+    parser.add_argument('--mg90s', action='store_true',
+                        help='Model MG90S PWM servos: 50Hz commands, weaker '
+                             'internal loop, stall-limited torque, no joint '
+                             'readback (taste FK uses commanded angles)')
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent
@@ -199,6 +203,11 @@ def main():
     sim = Q1LiteSim(str(_Q1LITE_SCENE), timestep=0.001)
     sim.reset()
     print(f"Q1 Lite: {sim.model.nu} actuators, standing at z={sim.position[2]:.3f}m")
+
+    if args.mg90s:
+        sim.set_servo_model(kp=2.0, kd=0.05, torque_limit=0.2, cmd_rate_hz=50.0)
+        print("MG90S servo model: 50Hz latched commands, internal PD "
+              "(kp=2.0, kd=0.05), stall-limited to 0.20 N·m — no joint readback")
 
     # ── Initialize Visual System ─────────────────────────────────────────
     visual = None
@@ -349,6 +358,8 @@ def main():
     print(f"  Brain: 138,639 LIF neurons on GPU")
     print(f"  Body:  Q1 Lite spider quadruped, {sim.model.nu} actuators, physics @ {PHYSICS_DT*1000:.0f}ms")
     print(f"  Neural: 1 brain step × {BRAIN_RATIO} phys steps = {BRAIN_RATIO*PHYSICS_DT*1000:.0f}ms interval")
+    if args.mg90s:
+        print("  Servo:  MG90S PWM model (50Hz commands, no readback)")
     if auto_demo_enabled[0]:
         print("  MODE: Auto-demo (SPACE to toggle)")
     else:
@@ -435,8 +446,11 @@ def main():
                 # -- Gustatory --
                 if gusto is not None:
                     fly_pos_mm = sim.position * 1000.0
+                    # MG90S mode: FK from latched commands (no joint readback)
+                    feet = (sim.commanded_foot_positions if args.mg90s
+                            else sim.foot_positions)
                     end_effectors = q1lite_feet_to_fly_end_effectors(
-                        sim.foot_positions, sim.position)
+                        feet, sim.position)
                     gusto.process(end_effectors)
 
                     grn_idx, grn_rates = gusto.get_rates()

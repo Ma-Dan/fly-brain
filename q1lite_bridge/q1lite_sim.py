@@ -37,6 +37,21 @@ from mujoco import viewer
 # 4-element foot/contact array order (matches Go2Sim / fly sensory adaptors)
 FOOT_ORDER = ['FL', 'FR', 'RL', 'RR']
 
+# Actuator order (q1lite.xml): FR, RR, FL, RL x [hip, knee]
+_ACT_LEG_ORDER = ['FR', 'RR', 'FL', 'RL']
+
+# Leg geometry for analytic FK from commanded angles (q1lite.xml,
+# base-local meters). phi is the leg-frame rotation about Z (left legs
+# are rotated 180 deg: local +X = base -X).
+_LEG_GEOM = {
+    'FR': ( 0.026,  0.021, 0.006, 0.0),
+    'RR': ( 0.026, -0.021, 0.006, 0.0),
+    'FL': (-0.026,  0.021, 0.006, np.pi),
+    'RL': (-0.026, -0.021, 0.006, np.pi),
+}
+_UPPER_LEN = 0.045   # shoulder -> knee (local +X)
+_LOWER_LEN = 0.047   # knee -> foot (local -Z)
+
 # Default PD gains (proven in q1lite/view_demo.py for the 0.25 N*m motors)
 DEFAULT_KP = 5.0
 DEFAULT_KD = 0.3
@@ -92,6 +107,16 @@ class Q1LiteSim:
         # Internal state
         self._step_count = 0
         self._last_ctrl = np.zeros(nu, dtype=np.float64)
+
+        # PWM-servo model (MG90S-style); disabled by default, see
+        # set_servo_model(). When active, commands latch at the PWM frame
+        # rate and the internal servo PD replaces the external one.
+        self._servo_model = False
+        self._servo_kp = self.kp
+        self._servo_kd = self.kd
+        self._servo_limit = 0.2
+        self._servo_cmd_interval = 1
+        self._latched_cmd = self.data.qpos[self._act_qposadr].copy()
 
         # Visual objects (taste zones / odor sources), hidden until placed
         self._setup_visual_objects()
@@ -283,12 +308,48 @@ class Q1LiteSim:
             self.data.qpos[7:7 + self.model.nu] = STAND_POSE
         mujoco.mj_forward(self.model, self.data)
         self._step_count = 0
+        self._latched_cmd = self.joint_positions.copy()
+
+    # ── PWM-servo model (MG90S-style) ────────────────────────────────────
+
+    def set_servo_model(self, kp=2.0, kd=0.05, torque_limit=0.2,
+                        cmd_rate_hz=50.0):
+        """
+        Model a hobby PWM servo (e.g. MG90S) instead of the external PD.
+
+        The controller latches position commands at the PWM frame rate
+        and receives no joint readback; a weaker internal PD limited to
+        the servo's stall torque tracks the latched command. Latched
+        commands are exposed via commanded_foot_positions so geometric
+        feedback (taste FK) works without joint sensing.
+
+        Args:
+            kp: internal position gain (N*m/rad). 2.0 reaches the stall
+                torque at ~5.7 deg error — typical analog-servo behaviour.
+            kd: internal damping (N*m*s/rad); analog servos ring, keep low.
+            torque_limit: stall torque (N*m); MG90S is ~0.20 at 6 V.
+            cmd_rate_hz: PWM command frame rate (analog servos: 50 Hz).
+        """
+        self._servo_kp = float(kp)
+        self._servo_kd = float(kd)
+        self._servo_limit = float(torque_limit)
+        dt = self.model.opt.timestep
+        self._servo_cmd_interval = max(
+            1, int(round(1.0 / (cmd_rate_hz * dt))))
+        self._latched_cmd = self.joint_positions.copy()
+        self._servo_model = True
 
     # ── Simulation ────────────────────────────────────────────────────────
 
     def step(self, joint_targets):
         """
         Step physics by one timestep with PD torque control.
+
+        Default: external PD at the full physics rate (reads qpos/qvel
+        every step). With set_servo_model() active: commands latch at the
+        PWM frame rate and a weaker internal PD with the servo's stall
+        torque replaces the external loop — the controller reads no joint
+        state (MG90S-style PWM servo).
 
         Args:
             joint_targets: array of shape (nu,) — desired joint positions
@@ -297,10 +358,19 @@ class Q1LiteSim:
         joint_targets = np.asarray(joint_targets, dtype=np.float64).reshape(-1)
         q = self.data.qpos[self._act_qposadr]
         qd = self.data.qvel[self._act_dofadr]
-        ctrl = self.kp * (joint_targets - q) - self.kd * qd
-        if self._ctrl_limited.any():
-            ctrl = np.where(self._ctrl_limited,
-                            np.clip(ctrl, self._ctrl_lo, self._ctrl_hi), ctrl)
+        # Latch the command at the PWM frame rate (every step when the
+        # servo model is off, so commanded_foot_positions stays meaningful)
+        if self._step_count % self._servo_cmd_interval == 0:
+            self._latched_cmd = joint_targets.copy()
+        if self._servo_model:
+            cmd = self._latched_cmd
+            ctrl = self._servo_kp * (cmd - q) - self._servo_kd * qd
+            ctrl = np.clip(ctrl, -self._servo_limit, self._servo_limit)
+        else:
+            ctrl = self.kp * (joint_targets - q) - self.kd * qd
+            if self._ctrl_limited.any():
+                ctrl = np.where(self._ctrl_limited,
+                                np.clip(ctrl, self._ctrl_lo, self._ctrl_hi), ctrl)
         self.data.ctrl[:] = ctrl
         self._last_ctrl = ctrl.copy()
 
@@ -361,6 +431,38 @@ class Q1LiteSim:
         out = np.zeros((4, 3), dtype=np.float64)
         for i, leg in enumerate(FOOT_ORDER):
             out[i] = self.data.geom_xpos[self._foot_geom_by_leg[leg]]
+        return out
+
+    @property
+    def commanded_foot_positions(self) -> np.ndarray:
+        """
+        Foot positions from the latched position commands via analytic
+        2-link FK — no joint readback (models feedback-free PWM servos
+        like the MG90S). Order [FL, FR, RL, RR], meters, world frame.
+
+        Uses the base body's true pose (external localization in the v1
+        architecture) but the COMMANDED joint angles, so servo tracking
+        error shows up as foot-position error.
+        """
+        cmd = self._latched_cmd
+        R = self.data.xmat[self._base_body_id].reshape(3, 3)
+        p0 = self.data.xpos[self._base_body_id]
+        out = np.zeros((4, 3), dtype=np.float64)
+        for i, leg in enumerate(FOOT_ORDER):
+            j = _ACT_LEG_ORDER.index(leg) * 2
+            qh, qk = cmd[j], cmd[j + 1]
+            sx, sy, sz, phi = _LEG_GEOM[leg]
+            a = qh + phi
+            # Knee: shoulder + upper leg rotated by the hip yaw
+            kx = sx + _UPPER_LEN * np.cos(a)
+            ky = sy + _UPPER_LEN * np.sin(a)
+            # Foot: lower leg rotated by the knee lift (local Y axis),
+            # then the hip yaw (local Z axis)
+            ox = -_LOWER_LEN * np.sin(qk) * np.cos(a)
+            oy = -_LOWER_LEN * np.sin(qk) * np.sin(a)
+            oz = -_LOWER_LEN * np.cos(qk)
+            local = np.array([kx + ox, ky + oy, sz + oz])
+            out[i] = p0 + R @ local
         return out
 
     @property
