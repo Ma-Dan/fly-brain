@@ -368,9 +368,9 @@ class Q1LiteSim:
         """
         4 foot contact normal-force magnitudes (N), order [FL, FR, RL, RR].
 
-        Uses mj_contactForce on the foot box geoms. Note: Q1 Lite weighs
-        ~80 g, so grounded feet carry only ~0.2 N each (vs ~40 N for Go2);
-        the fly sensory adaptors scale these values appropriately.
+        Uses mj_contactForce on the foot box geoms. Diagnostic only —
+        the brain loop does not consume contact forces (the v1 hardware
+        target has no force/torque sensing).
         """
         forces = np.zeros(4, dtype=np.float64)
         cforce = np.zeros(6, dtype=np.float64)

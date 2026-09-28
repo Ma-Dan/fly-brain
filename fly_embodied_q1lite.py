@@ -74,51 +74,10 @@ AUTO_DEMO_SEQUENCE = [
 # Sensory Adaptors — convert Q1 Lite sensor data to fly-compatible formats
 # ============================================================================
 
-# Q1 Lite foot contact forces are already in the SomatosensorySystem's
-# intended regime: normal stance (~0.2 N) sits just under FORCE_FLOOR=0.3 N
-# ("below = normal walking contact, no JO activation"), foot-fall impacts
-# poke to ~1-4 N, and a real shove exceeds FORCE_ESCAPE=5 N. FORCE_SCALE
-# stays as a tuning knob — scaling up saturates the JO touch pathway and
-# locks the brain into grooming/escape during normal walking.
-FORCE_SCALE = 1.0
-
-def q1lite_contact_to_fly(q1lite_contact_forces):
-    """
-    Convert Q1 Lite (4,) contact forces to fly-compatible (36, 3) array.
-
-    Q1 Lite has 4 feet, each with 1 scalar force.
-    Fly interface expects (6 legs × 6 segments, 3 axes).
-    We distribute the Q1 Lite forces to create bilateral activation.
-
-    Q1 Lite's raw foot forces already sit in the SomatosensorySystem's
-    intended regime (FORCE_FLOOR=0.3 N = "normal walking contact, no JO
-    activation"; stance ~0.2 N stays below it). FORCE_SCALE is left at 1.0
-    as a tuning knob — scaling it up saturates the JO touch pathway and
-    locks the brain into grooming/escape during normal walking.
-    """
-    # Normalize Q1 Lite forces
-    fl_f  = max(q1lite_contact_forces[0], 0.0) * FORCE_SCALE  # FL foot
-    fr_f  = max(q1lite_contact_forces[1], 0.0) * FORCE_SCALE  # FR foot
-    rl_f  = max(q1lite_contact_forces[2], 0.0) * FORCE_SCALE  # RL foot
-    rr_f  = max(q1lite_contact_forces[3], 0.0) * FORCE_SCALE  # RR foot
-
-    # Per-foot → per-fly-leg assignment (preserves fore/aft load):
-    #   LF ← FL,  LH ← RL  (front vs hind stay distinct, no averaging dilution)
-    #   LM ← mean(FL, RL)  (phantom middle leg)
-    #   RF ← FR,  RH ← RR,  RM ← mean(FR, RR)
-    leg_force = np.array([
-        fl_f, 0.5 * (fl_f + rl_f), rl_f,   # LF, LM, LH
-        fr_f, 0.5 * (fr_f + rr_f), rr_f,   # RF, RM, RH
-    ], dtype=np.float64)
-
-    # Create (36, 3) array matching fly layout:
-    # 6 legs (LF,LM,LH,RF,RM,RH) × 6 segments × 3 axes
-    out = np.zeros((36, 3), dtype=np.float64)
-    for leg in range(6):
-        out[leg * 6:(leg + 1) * 6, 2] = leg_force[leg]  # z-axis force (vertical)
-
-    return out
-
+# NOTE: contact-force feedback is intentionally absent — the v1 hardware
+# target (SC09 serial bus servos) has no force/torque sensing, so the
+# JO touch pathway and bridge-level tactile escape are not wired. Only
+# geometric feedback (foot positions) is converted below.
 
 def q1lite_feet_to_fly_end_effectors(q1lite_foot_positions, sim_position):
     """
@@ -168,7 +127,7 @@ def main():
     parser.add_argument('--monitor', action='store_true',
                         help='Open brain monitor window')
     parser.add_argument('--somatosensory', action='store_true',
-                        help='Enable touch/sound via JO neurons')
+                        help='Enable vibration/sound via JO neurons (no contact-force sensing)')
     parser.add_argument('--gustatory', action='store_true',
                         help='Enable taste zones (sugar/bitter)')
     parser.add_argument('--olfactory', action='store_true',
@@ -258,7 +217,7 @@ def main():
     somato = None
     vibration_sources = []
     if args.somatosensory and brain is not None:
-        print("Initializing somatosensory system (JO touch + sound)...")
+        print("Initializing somatosensory system (JO vibration/sound — no contact force)...")
         somato = SomatosensorySystem(brain.flyid2i)
         vibration_sources = [
             VibrationSource(
@@ -325,16 +284,11 @@ def main():
 
     # ── Initialize Bridge ──────────────────────────────────────────────
     decoder = DNRateDecoder(window_ms=50.0, dt_ms=0.1, max_rate=200.0)
-    adaptor = Q1LiteAdaptor(decoder, dt=0.01, bridge_kwargs=dict(tactile_escape_force=6.0))  # N, raw: above trot impact peaks (~4.3N measured at full drive)
+    adaptor = Q1LiteAdaptor(decoder, dt=0.01)
 
-    # Register populations for JO monitoring
+    # Register populations for JO monitoring (sound only: no contact-force
+    # sensing on the v1 hardware target, so the JO touch channel stays silent)
     if somato is not None and brain is not None:
-        if len(somato.touch_idx_left) > 0:
-            brain.register_population('JO_touch_L', somato.touch_idx_left)
-            decoder.register_population('JO_touch_L')
-        if len(somato.touch_idx_right) > 0:
-            brain.register_population('JO_touch_R', somato.touch_idx_right)
-            decoder.register_population('JO_touch_R')
         if len(somato.sound_idx_left) > 0:
             brain.register_population('JO_sound_L', somato.sound_idx_left)
             decoder.register_population('JO_sound_L')
@@ -468,13 +422,8 @@ def main():
             if step % BRAIN_RATIO == 0:
                 brain_bundle = True
 
-                # -- Somatosensory --
+                # -- Somatosensory (vibration/sound only — no contact force) --
                 if somato is not None:
-                    # Contact forces: Q1 Lite (4,) → fly (36, 3)
-                    contact_sim = sim.contact_forces
-                    contact_fly = q1lite_contact_to_fly(contact_sim)
-                    somato.process_contact(contact_fly)
-
                     # Vibration: Q1 Lite position (m → mm), heading
                     fly_pos_mm = sim.position * 1000.0
                     fly_heading = sim.heading_angle
@@ -519,7 +468,6 @@ def main():
 
                 # -- Sensory → Bridge state --
                 if somato is not None:
-                    adaptor.bridge.tactile_force = somato.max_contact_force
                     adaptor.bridge.sound_orientation_bias = somato.orientation_bias
                 if gusto is not None:
                     adaptor.bridge.bitter_active = gusto.bitter_active
@@ -572,9 +520,7 @@ def main():
                     'dn_turn_R': d.get_group_rate('turn_R'),
                 }
                 if somato is not None:
-                    mon_data['jo_contact'] = somato.touch_level
                     mon_data['jo_sound'] = somato.sound_level
-                    mon_data['contact_force'] = somato.max_contact_force
                 if gusto is not None:
                     mon_data['sugar_level'] = gusto.sugar_level
                     mon_data['bitter_level'] = gusto.bitter_level
