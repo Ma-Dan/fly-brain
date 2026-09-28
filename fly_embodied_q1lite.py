@@ -11,6 +11,7 @@ Usage:
     python fly_embodied_q1lite.py --stimulus p9          # Manual stimulus
     python fly_embodied_q1lite.py --no-auto              # Keyboard only
     python fly_embodied_q1lite.py --olfactory --gustatory --somatosensory
+    python fly_embodied_q1lite.py --servo             # + mirror one joint to a real servo
 
 Keys (in MuJoCo viewer window):
     1 = Sugar GRNs      -> forward approach
@@ -28,6 +29,7 @@ import argparse
 import numpy as np
 import mujoco
 import multiprocessing as mp
+import time
 from pathlib import Path
 
 from brain_body_bridge import (
@@ -36,6 +38,7 @@ from brain_body_bridge import (
 from q1lite_bridge.q1lite_sim import Q1LiteSim
 from q1lite_bridge.q1lite_adaptor import Q1LiteAdaptor, QuadCPG
 from q1lite_bridge.q1lite_vision import Q1LiteVisualBridge
+from q1lite_bridge.servo_mirror import ServoMirror, JOINTS
 
 from visual_system import VisualSystem
 from somatosensory import SomatosensorySystem, VibrationSource
@@ -146,6 +149,17 @@ def main():
                         help='Model MG90S PWM servos: 50Hz commands, weaker '
                              'internal loop, stall-limited torque, no joint '
                              'readback (taste FK uses commanded angles)')
+    parser.add_argument('--servo', action='store_true',
+                        help='Mirror one CPG joint onto a real PWM servo on '
+                             'the Raspberry Pi (loop becomes real-time paced)')
+    parser.add_argument('--servo-joint', default='FR_hip', choices=JOINTS,
+                        help='which joint to mirror (default FR_hip)')
+    parser.add_argument('--servo-host', default='ubuntu@192.168.1.29',
+                        help='SSH target running servo_stream.py')
+    parser.add_argument('--servo-center', type=float, default=90.0,
+                        help='servo deg at the joint standby pose')
+    parser.add_argument('--servo-scale', type=float, default=57.29578,
+                        help='servo deg per rad (negative if mounted reversed)')
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent
@@ -295,6 +309,17 @@ def main():
     decoder = DNRateDecoder(window_ms=50.0, dt_ms=0.1, max_rate=200.0)
     adaptor = Q1LiteAdaptor(decoder, dt=0.01)
 
+    # ── Real-servo mirror (optional: ONE joint onto the Pi) ────────────
+    servo = None
+    if args.servo:
+        print(f"Connecting servo mirror: {args.servo_joint} -> "
+              f"{args.servo_host} ...")
+        servo = ServoMirror(joint=args.servo_joint, host=args.servo_host,
+                            center=args.servo_center, scale=args.servo_scale)
+        print(f"Servo mirror active: {args.servo_joint} "
+              f"(stand {np.degrees(servo.stand):.0f} deg -> "
+              f"servo {args.servo_center:.0f} deg, 50Hz)")
+
     # Register populations for JO monitoring (sound only: no contact-force
     # sensing on the v1 hardware target, so the JO touch channel stays silent)
     if somato is not None and brain is not None:
@@ -360,6 +385,9 @@ def main():
     print(f"  Neural: 1 brain step × {BRAIN_RATIO} phys steps = {BRAIN_RATIO*PHYSICS_DT*1000:.0f}ms interval")
     if args.mg90s:
         print("  Servo:  MG90S PWM model (50Hz commands, no readback)")
+    if args.servo:
+        print(f"  Mirror: {args.servo_joint} -> real servo @ {args.servo_host} "
+              f"(real-time paced)")
     if auto_demo_enabled[0]:
         print("  MODE: Auto-demo (SPACE to toggle)")
     else:
@@ -369,6 +397,9 @@ def main():
     print()
 
     braindata_sender = None
+
+    # Wall-clock reference for real-time pacing (used with --servo)
+    t0_wall = time.time()
 
     try:
         while True:
@@ -504,9 +535,12 @@ def main():
 
             # ── Body step: CPG at physics rate (every step) ───────
             if brain is not None:
-                sim.step(adaptor.cpg.step(fwd_drive, turn_drive))
+                targets = adaptor.cpg.step(fwd_drive, turn_drive)
             else:
-                sim.step(stand_pose)
+                targets = stand_pose
+            sim.step(targets)
+            if servo is not None:
+                servo.send(targets)   # rate-limited to 50Hz internally
 
             # ── Status print ───────────────────────────────────────────
             if step % STATUS_INTERVAL == 0:
@@ -584,12 +618,21 @@ def main():
             if viewer is not None:
                 viewer.sync()
 
+            # ── Real-time pacing (only when mirroring a real servo) ─
+            if servo is not None:
+                now = time.time()
+                target_t = t0_wall + step * PHYSICS_DT
+                if now < target_t:
+                    time.sleep(target_t - now)
+
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
 
     finally:
         if viewer is not None:
             viewer.close()
+        if servo is not None:
+            servo.close()
         if brain is not None:
             brain.save_plastic_weights()
         if monitor is not None:
