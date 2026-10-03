@@ -54,6 +54,11 @@ class MlxBrainEngine:
         # Input rate vector
         self.rates = mx.zeros((self.num_neurons,), dtype=mx.float32)
 
+        # Indices currently driven by the active keyboard/auto stimulus, so
+        # that sensory feedback (JO/GRN/OR) writing the *actual* (possibly
+        # lower, e.g. habituated) value does not clobber a deliberate stimulus.
+        self._stim_idx_np = np.array([], dtype=np.int32)
+
         # DN neuron indices
         self.dn_indices = {
             name: self.flyid2i[flyid]
@@ -93,13 +98,13 @@ class MlxBrainEngine:
         self._decay_count = 0
         self._decay_every = 100  # apply multiplicative decay every N hebb updates
 
-        if self._plastic_path.exists():
-            saved = np.load(self._plastic_path) if self._plastic_path.suffix == '.npy' \
-                else None
-            if saved is not None and saved.shape == np.array(val).shape:
+        npy_path = self._plastic_path.with_suffix('.npy')
+        if npy_path.exists():
+            saved = np.load(npy_path)
+            if saved.shape == np.array(val).shape:
                 self.model.val = mx.array(saved.astype(np.float32))
                 self._sign_mask = mx.sign(self.model.val)
-                print(f"[MlxBrainEngine] Loaded plastic weights from {self._plastic_path}")
+                print(f"[MlxBrainEngine] Loaded plastic weights from {npy_path}")
 
         print(f"[MlxBrainEngine] Hebbian plasticity active: "
               f"{len(val)} synapses")
@@ -162,23 +167,44 @@ class MlxBrainEngine:
         if stim_name and stim_name in STIMULI:
             idx = self.stim_indices.get(stim_name, [])
             if idx:
+                self._stim_idx_np = np.asarray(idx, dtype=np.int32)
                 self.rates = self.rates.at[mx.array(idx, dtype=mx.int32)].add(
                     mx.array([STIMULI[stim_name]['rate']], dtype=mx.float32))
+            else:
+                self._stim_idx_np = np.array([], dtype=np.int32)
+        else:
+            self._stim_idx_np = np.array([], dtype=np.int32)
 
     def set_visual_rates(self, photo_indices, photo_rates):
         if photo_indices is None or len(photo_indices) == 0:
             return
         idx = mx.array(np.asarray(photo_indices, dtype=np.int32))
         val = mx.array(np.asarray(photo_rates, dtype=np.float32))
-        self.rates = self.rates.at[idx].add(val)
+        # SET semantics (MLX ArrayAt has no .set(), so write the delta):
+        # this is called every vision frame with the current photoreceptor
+        # rates; accumulating would inflate them frame by frame until the
+        # next set_stimulus zeroing.
+        current = mx.take(self.rates, idx)
+        self.rates = self.rates.at[idx].add(val - current)
 
     def set_sensory_rates(self, indices, rates):
         if indices is None or len(indices) == 0:
             return
-        idx = mx.array(np.asarray(indices, dtype=np.int32))
-        new_rates = mx.array(np.asarray(rates, dtype=np.float32))
+        idx_np = np.asarray(indices, dtype=np.int32)
+        new_np = np.asarray(rates, dtype=np.float32)
+        idx = mx.array(idx_np)
         current = mx.take(self.rates, idx)
-        self.rates = self.rates.at[idx].add(mx.maximum(0, new_rates - current))
+        # Write the ACTUAL sensory value so that habituation/decay in the
+        # sensory systems reaches the brain — but protect neurons driven by
+        # the current stimulus (a sensory "no contact" must not zero a
+        # deliberate keyboard/auto stimulus on the same neurons).
+        if self._stim_idx_np.size > 0 and np.isin(idx_np, self._stim_idx_np).any():
+            is_stim = np.isin(idx_np, self._stim_idx_np)
+            current_np = np.array(current).astype(np.float32)
+            write_np = np.where(is_stim, np.maximum(current_np, new_np), new_np)
+            self.rates = self.rates.at[idx].add(mx.array(write_np) - current)
+        else:
+            self.rates = self.rates.at[idx].add(mx.array(new_np) - current)
 
     # ── Execution ───────────────────────────────────────────────────────
 

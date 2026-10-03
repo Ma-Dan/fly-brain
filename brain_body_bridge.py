@@ -307,6 +307,11 @@ class BrainEngine:
         # Input rate tensor (modified by set_stimulus)
         self.rates = torch.zeros(1, self.num_neurons, device=self.device)
 
+        # Indices currently driven by the active keyboard/auto stimulus, so
+        # that sensory feedback (JO/GRN/OR) writing the *actual* (possibly
+        # lower, e.g. habituated) value does not clobber a deliberate stimulus.
+        self._stim_idx = torch.empty(0, dtype=torch.long, device=self.device)
+
         # Precompute DN neuron tensor indices
         self.dn_indices = {}
         for name, flyid in DN_NEURONS.items():
@@ -410,7 +415,15 @@ class BrainEngine:
         if stim_name and stim_name in STIMULI:
             idx = self.stim_indices.get(stim_name, [])
             if idx:
+                self._stim_idx = torch.as_tensor(
+                    idx, dtype=torch.long, device=self.device)
                 self.rates[0, idx] = STIMULI[stim_name]['rate']
+            else:
+                self._stim_idx = torch.empty(
+                    0, dtype=torch.long, device=self.device)
+        else:
+            self._stim_idx = torch.empty(
+                0, dtype=torch.long, device=self.device)
 
     def set_visual_rates(self, photo_indices, photo_rates):
         """Set firing rates for photoreceptor neurons from visual input.
@@ -432,9 +445,11 @@ class BrainEngine:
     def set_sensory_rates(self, indices, rates):
         """Set firing rates for somatosensory/auditory (JO) neurons.
 
-        Uses element-wise maximum with existing rates so that manual
-        keyboard stimuli (set_stimulus) are not overwritten by lower
-        somatosensory rates.
+        Writes the ACTUAL current sensory value (so habituation/decay in
+        the sensory systems reaches the brain), except on neurons driven
+        by the active keyboard/auto stimulus, where the rate is kept at
+        the maximum of the two (a sensory "no contact" must not zero a
+        deliberate stimulus on the same neurons).
 
         Args:
             indices: np.ndarray of tensor indices (int64)
@@ -445,7 +460,15 @@ class BrainEngine:
         new_rates = torch.as_tensor(
             rates, dtype=torch.float32, device=self.device)
         current = self.rates[0, indices]
-        self.rates[0, indices] = torch.maximum(current, new_rates)
+        if self._stim_idx.numel() > 0:
+            idx_t = torch.as_tensor(
+                indices, dtype=torch.long, device=self.device)
+            is_stim = torch.isin(idx_t, self._stim_idx)
+            write = torch.where(is_stim, torch.maximum(current, new_rates),
+                                new_rates)
+        else:
+            write = new_rates
+        self.rates[0, indices] = write
 
     @torch.no_grad()
     def step(self):

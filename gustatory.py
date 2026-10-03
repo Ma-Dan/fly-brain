@@ -12,6 +12,8 @@ Architecture:
   GRN population with rate proportional to contact strength.
 """
 
+import math
+
 import numpy as np
 from brain_body_bridge import STIMULI
 
@@ -66,6 +68,21 @@ class GustatorySystem:
     SUGAR_MAX_RATE = 200.0   # Hz
     BITTER_MAX_RATE = 250.0  # Hz
 
+    # Peripheral GRN habituation (sensory adaptation to sustained contact).
+    # Without this, standing on a taste zone locks the GRN rate at max
+    # forever -> MN9 stays above the feeding threshold -> drive = 0 ->
+    # the body never leaves the zone -> a stable feeding attractor that
+    # parks the robot on food indefinitely. Real flies habituate to
+    # constant taste and resume locomotion; model that here:
+    #   sustained contact  -> response decays exponentially toward a floor
+    #   contact lost       -> response recovers toward full sensitivity
+    SUGAR_ADAPT_TAU = 12.0    # s, decay time constant while in contact
+    SUGAR_ADAPT_FLOOR = 0.08  # floor fraction of max response when adapted
+    SUGAR_RECOVER_TAU = 10.0  # s, recovery time constant after contact lost
+    BITTER_ADAPT_TAU = 8.0
+    BITTER_ADAPT_FLOOR = 0.15
+    BITTER_RECOVER_TAU = 8.0
+
     def __init__(self, flyid2i, zones, derived_legs=None, ground_z_thresh=0.5):
         self.zones = zones
         self.flyid2i = flyid2i
@@ -99,6 +116,10 @@ class GustatorySystem:
         self.bitter_rate = 0.0
         self.active_zone_label = ''  # label of most-activated zone
 
+        # Habituation state (multiplicative response factors in [floor, 1])
+        self._sugar_adapt = 1.0
+        self._bitter_adapt = 1.0
+
         print(f"[Gustatory] Sugar GRNs: {len(self.sugar_indices)} neurons")
         print(f"[Gustatory] Bitter GRNs: {len(self.bitter_indices)} neurons")
         print(f"[Gustatory] {len(zones)} taste zones:")
@@ -108,13 +129,16 @@ class GustatorySystem:
 
     # ── Zone Detection ────────────────────────────────────────────────────
 
-    def process(self, end_effectors):
+    def process(self, end_effectors, dt=0.01):
         """Detect which legs are in which taste zones.
 
         Parameters
         ----------
         end_effectors : np.ndarray, shape (6, 3)
             Tarsal tip positions [x, y, z] per leg in mm.
+        dt : float
+            Seconds since the last call (used for habituation dynamics).
+            Callers invoke this once per brain bundle (~10 ms).
         """
         self.sugar_legs = []
         self.bitter_legs = []
@@ -161,6 +185,27 @@ class GustatorySystem:
             self.SUGAR_MAX_RATE * min(len(self.sugar_legs) / 2.0, 1.0))
         self.bitter_rate = (
             self.BITTER_MAX_RATE * min(len(self.bitter_legs) / 2.0, 1.0))
+
+        # Peripheral habituation: sustained contact decays the response
+        # toward a floor; contact lost recovers it toward full. This is
+        # what breaks the sugar -> feeding -> stand-still -> sugar loop.
+        if self.sugar_rate > 0.1:
+            self._sugar_adapt = max(
+                self.SUGAR_ADAPT_FLOOR,
+                self._sugar_adapt * math.exp(-dt / self.SUGAR_ADAPT_TAU))
+        else:
+            self._sugar_adapt = 1.0 - (1.0 - self._sugar_adapt) * math.exp(
+                -dt / self.SUGAR_RECOVER_TAU)
+        if self.bitter_rate > 0.1:
+            self._bitter_adapt = max(
+                self.BITTER_ADAPT_FLOOR,
+                self._bitter_adapt * math.exp(-dt / self.BITTER_ADAPT_TAU))
+        else:
+            self._bitter_adapt = 1.0 - (1.0 - self._bitter_adapt) * math.exp(
+                -dt / self.BITTER_RECOVER_TAU)
+
+        self.sugar_rate *= self._sugar_adapt
+        self.bitter_rate *= self._bitter_adapt
 
     # ── Brain Injection ───────────────────────────────────────────────────
 
