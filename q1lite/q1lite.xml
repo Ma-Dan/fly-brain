@@ -27,7 +27,7 @@
     <motor ctrlrange="-0.25 0.25"/>
     <default class="visual"><geom type="mesh" group="2" contype="0" conaffinity="0"/></default>
     <default class="collision"><geom group="3"/></default>
-    <default class="foot"><geom type="box" size="0.007 0.005 0.003" group="3" priority="2" solimp="0.9 0.99 0.001" friction="1.5 0.1 0.01" condim="3"/></default>
+    <default class="foot"><geom type="box" size="0.007 0.005 0.003" group="3" priority="2" solimp="0.9 0.99 0.001" solref="0.008 1" friction="4.0 0.4 0.02" condim="6"/></default>
   </default>
 
   <asset>

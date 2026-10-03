@@ -45,8 +45,10 @@ HIP0 = {'FR': +0.785, 'RR': -0.785, 'FL': -0.785, 'RL': +0.785}
 # Trot: diagonal pairs FR+RL / RR+FL move together
 PHASE = {'FR': 0.0, 'RR': math.pi, 'FL': math.pi, 'RL': 0.0}
 
-# Left-right mirror: left legs oscillate with opposite sign (+sin vs -sin)
-SIDE = {'FR': -1.0, 'RR': -1.0, 'FL': +1.0, 'RL': +1.0}
+# Left-right mirror: left legs oscillate with opposite sign (+sin vs -sin).
+# NOTE: sign is such that the foot grips while sweeping backward in body
+# frame (propulsion). The opposite sign walks backward — verified in sim.
+SIDE = {'FR': +1.0, 'RR': +1.0, 'FL': -1.0, 'RL': -1.0}
 
 RIGHT_LEGS = ('FR', 'RR')
 LEFT_LEGS = ('FL', 'RL')
@@ -131,21 +133,23 @@ class QuadCPG:
             base = i * ACTUATOR_PER_LEG
             th = t + self.phases[i]
 
-            # Differential stride: turn>0 (veer right) -> left legs step
-            # longer, right legs shorter.
+            # Differential stride: turn>0 (veer right) -> right legs step
+            # longer, left legs shorter (sign flipped along with SIDE: the
+            # reversed oscillation also reverses which side must stride
+            # longer to yaw the body CW).
             if leg in RIGHT_LEGS:
                 side_amp = amp * np.clip(
-                    1.0 - self.turn_amp_gain * turn_drive, 0.4, 1.6)
+                    1.0 + self.turn_amp_gain * turn_drive, 0.4, 1.6)
             else:
                 side_amp = amp * np.clip(
-                    1.0 + self.turn_amp_gain * turn_drive, 0.4, 1.6)
+                    1.0 - self.turn_amp_gain * turn_drive, 0.4, 1.6)
 
-            # Uniform yaw bias: -bias leans right legs backward and left
-            # legs forward (positive hip = forward for right legs,
+            # Uniform yaw bias: +bias leans right legs forward and left
+            # legs backward (positive hip = forward for right legs,
             # backward for left legs), yawing the body CW for turn > 0.
             hip = (HIP0[leg]
                    + self.sides[i] * self.hip_amp * side_amp * math.sin(th)
-                   - self.turn_bias_gain * turn_drive)
+                   + self.turn_bias_gain * turn_drive)
 
             # Knee lift follows global amplitude only (uniform foot
             # clearance regardless of turning).

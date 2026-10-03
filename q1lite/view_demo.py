@@ -26,7 +26,7 @@ HIP0 = {"FL": -0.785, "FR": +0.785, "RL": +0.785, "RR": -0.785}
 # Trot: diagonal pairs FL+RR / FR+RL move together
 PHASE = {"FL": 0.0, "FR": np.pi, "RL": np.pi, "RR": 0.0}
 # Left-right mirror: left legs oscillate with opposite sign (+sin vs -sin)
-SIDE = {"FL": +1.0, "RL": +1.0, "FR": -1.0, "RR": -1.0}
+SIDE = {"FL": -1.0, "RL": -1.0, "FR": +1.0, "RR": +1.0}
 
 F, A_HIP, A_KNEE = 1.3, 0.4, 0.6   # gait params
 GAIT = True                          # False -> just inspect standing pose
