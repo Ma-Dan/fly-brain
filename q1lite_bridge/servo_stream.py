@@ -17,6 +17,11 @@ or unparseable values are silently skipped (robust mid-stream). 'q' or
 EOF releases all 8 servos (limp), zeros all 16 PCA9685 channels and
 exits cleanly.
 
+Latest-wins: stdin is drained in batches and only the NEWEST valid
+command is applied. A network stall followed by a burst of queued lines
+therefore never replays stale positions one by one — the servos jump
+straight to the current target and resume tracking.
+
 Pi setup (once):
     sudo raspi-config nonint do_i2c 0        # enable I2C (or interactive: Interface Options -> I2C)
     sudo apt-get install -y i2c-tools
@@ -32,7 +37,10 @@ Usage (on the Pi):
     /home/ubuntu/miniconda3/envs/lerobot/bin/python /home/ubuntu/servo_stream.py
     echo "90 90 90 90 90 90 90 90" | ...     # then stream lines
 """
+import os
+import select
 import sys
+import time
 
 from adafruit_servokit import ServoKit
 
@@ -53,23 +61,46 @@ def main():
         print(f"error: {e}", flush=True)
         sys.exit(1)
     print(f"ready {N_SERVOS}", flush=True)
+    buf = ""
     try:
-        for line in sys.stdin:
-            cmd = line.strip()
-            if not cmd:
+        while True:
+            # block until the next chunk arrives (no idle CPU)
+            r, _, _ = select.select([sys.stdin], [], [])
+            if not r:
                 continue
-            if cmd == "q":
+            data = os.read(sys.stdin.fileno(), 65536)
+            if not data:
+                break  # EOF
+            buf += data.decode("ascii", "replace")
+            *lines, buf = buf.split("\n")
+            # drain the whole batch, keep only the newest valid command
+            # (latest-wins: a post-stall burst must not replay stale
+            # positions one by one)
+            latest = None
+            stop = False
+            for line in lines:
+                cmd = line.strip()
+                if not cmd:
+                    continue
+                if cmd == "q":
+                    stop = True
+                    break
+                toks = cmd.split()
+                if len(toks) != N_SERVOS:
+                    continue
+                try:
+                    latest = [float(t) for t in toks]
+                except ValueError:
+                    continue
+            if latest is not None:
+                for i, deg in enumerate(latest):
+                    kit.servo[i].angle = max(0.0, min(180.0, deg))
+            if stop:
                 break
-            toks = cmd.split()
-            if len(toks) != N_SERVOS:
-                continue
-            try:
-                degs = [float(t) for t in toks]
-            except ValueError:
-                continue
-            for i, deg in enumerate(degs):
-                kit.servo[i].angle = max(0.0, min(180.0, deg))
     finally:
+        # brief settle so a park command coalesced with 'q' by the
+        # network still reaches the servo before release
+        time.sleep(0.5)
         for i in range(N_SERVOS):
             kit.servo[i].angle = None  # release -> servo limp
         for ch in kit._pca.channels:
