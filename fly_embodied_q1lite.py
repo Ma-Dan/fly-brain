@@ -7,13 +7,25 @@ Q1 Lite is an 8-DOF spider quadruped (hip=yaw, knee=lift), forward = body +Y;
 same 138,639-neuron brain, different body.
 
 Usage:
-    python fly_embodied_q1lite.py                        # Auto-demo
-    python fly_embodied_q1lite.py --stimulus p9          # Manual stimulus
-    python fly_embodied_q1lite.py --no-auto              # Keyboard only
-    python fly_embodied_q1lite.py --olfactory --gustatory --somatosensory
-    python fly_embodied_q1lite.py --servo             # + mirror one joint to a real servo
+    mjpython fly_embodied_q1lite.py                        # Auto-demo (MuJoCo viewer + virtual eyes)
+    mjpython fly_embodied_q1lite.py --stimulus p9          # Manual stimulus
+    mjpython fly_embodied_q1lite.py --no-auto              # Keyboard only
+    mjpython fly_embodied_q1lite.py --olfactory --gustatory --somatosensory
+    mjpython fly_embodied_q1lite.py --servo               # + mirror one joint to a real servo
+    mjpython fly_embodied_q1lite.py --camera real --visual # Pi camera as compound eyes + live view
+    mjpython fly_embodied_q1lite.py --camera real --visual --servo   # full real-robot loop
 
-Keys (in MuJoCo viewer window):
+Camera modes (--camera):
+    virtual (default)  MuJoCo offscreen render → compound eyes; MuJoCo
+                       viewer shows the sim. Run under mjpython (macOS).
+    real               Pi USB camera → compound eyes (real world vision);
+                       camera window shows the live feed. The MuJoCo
+                       viewer ALSO opens (sim state) so you see both.
+                       Works under both mjpython and plain python; the
+                       camera display runs in a spawned child process so
+                       it never conflicts with MLX/Metal or mjpython.
+
+Keys (work in BOTH the MuJoCo viewer and the camera window):
     1 = Sugar GRNs      -> forward approach
     2 = P9 direct       -> forward walking
     3 = LC4 looming     -> escape
@@ -115,6 +127,19 @@ def q1lite_feet_to_fly_end_effectors(q1lite_foot_positions, sim_position):
 # ============================================================================
 
 def main():
+    # Lazy import: the spawn'd brain-monitor/camera-display children
+    # re-import this module, and a module-level cv2 import here would drag
+    # cv2's bundled SDL2 into the children alongside pygame's SDL2 — the
+    # objc class-collision warnings and "mysterious crashes" macOS warns
+    # about. Importing inside main() keeps cv2 (and SDL2) in this process
+    # (and the camera-display child) only.
+    from q1lite_bridge.pi_camera import (
+        PiCameraViewer,
+        DEFAULT_HOST as PI_CAM_HOST,
+        DEFAULT_PORT as PI_CAM_PORT,
+    )
+    from q1lite_bridge.q1lite_vision import RealCameraVisualBridge
+
     parser = argparse.ArgumentParser(description='Embodied Drosophila → Q1 Lite')
     parser.add_argument('--no-viewer', action='store_true',
                         help='Run headless (no viewer)')
@@ -154,13 +179,29 @@ def main():
                              'the Raspberry Pi (loop becomes real-time paced)')
     parser.add_argument('--servo-joint', default='FR_hip', choices=JOINTS,
                         help='which joint to mirror (default FR_hip)')
-    parser.add_argument('--servo-host', default='ubuntu@192.168.1.29',
+    parser.add_argument('--servo-host', default='ubuntu@192.168.1.141',
                         help='SSH target running servo_stream.py')
     parser.add_argument('--servo-center', type=float, default=90.0,
                         help='servo deg at the joint standby pose')
     parser.add_argument('--servo-scale', type=float, default=57.29578,
                         help='servo deg per rad (negative if mounted reversed)')
+    parser.add_argument('--camera', choices=['virtual', 'real'],
+                        default='virtual',
+                        help='camera view: virtual = MuJoCo viewer (default), '
+                             'real = Raspberry Pi USB camera over SSH MJPEG '
+                             '(replaces the MuJoCo viewer window)')
+    parser.add_argument('--camera-host', default=PI_CAM_HOST,
+                        help='SSH target running camera_stream.py '
+                             '(real camera mode)')
+    parser.add_argument('--camera-port', type=int, default=PI_CAM_PORT,
+                        help='MJPEG stream port on the Pi (real camera mode)')
     args = parser.parse_args()
+
+    # NOTE on launchers (macOS): the real-camera display runs in a spawned
+    # child process, so --camera real works under BOTH plain python and
+    # mjpython. Under mjpython the MuJoCo viewer ALSO opens (sim state +
+    # camera side by side); under plain python only the camera window
+    # opens (launch_passive needs mjpython).
 
     project_root = Path(__file__).resolve().parent
 
@@ -223,14 +264,34 @@ def main():
         print("MG90S servo model: 50Hz latched commands, internal PD "
               "(kp=2.0, kd=0.05), stall-limited to 0.20 N·m — no joint readback")
 
+    # ── Connect Real Camera (before visual init: the compound eyes may
+    #    use it as input) ─────────────────────────────────────────────
+    pi_camera = None
+    if args.camera == 'real':
+        print(f"Launching Raspberry Pi camera stream on {args.camera_host}...")
+        try:
+            pi_camera = PiCameraViewer(
+                host=args.camera_host, port=args.camera_port,
+                window='Q1 Lite — Real Camera (Pi)')
+        except RuntimeError as e:
+            print(f"[WARN] real camera failed ({e}); "
+                  f"falling back to virtual eyes/viewer.")
+            pi_camera = None
+
     # ── Initialize Visual System ─────────────────────────────────────────
     visual = None
     cached_visual = (None, None)
     last_vision_obs = None
     VISION_RATIO = 500  # process vision every 500 physics steps (500ms)
     if args.visual and brain is not None:
-        print("Initializing visual system (Q1 Lite eyes → T2 → LC4 → GF)...")
-        q1lite_vision = Q1LiteVisualBridge(sim.model, sim.data, width=128, height=128)
+        if pi_camera is not None:
+            print("Initializing visual system "
+                  "(REAL Pi camera eyes → T2 → LC4 → GF)...")
+            q1lite_vision = RealCameraVisualBridge(
+                pi_camera, width=128, height=128)
+        else:
+            print("Initializing visual system (Q1 Lite eyes → T2 → LC4 → GF)...")
+            q1lite_vision = Q1LiteVisualBridge(sim.model, sim.data, width=128, height=128)
         visual = VisualSystem(brain.flyid2i, brain.i2flyid)
         print(f"  T2 neurons: {visual._n_T2 if hasattr(visual, '_n_T2') else '?'} "
               f"LC4: {sum(len(v) for v in visual.get_lc4_indices(brain.flyid2i).values())} "
@@ -359,10 +420,20 @@ def main():
     stand_pose = QuadCPG(dt=PHYSICS_DT).stand_offsets.copy()
 
     # ── Launch Viewer ──────────────────────────────────────────────────
+    # MuJoCo viewer shows the SIM STATE in both camera modes (under
+    # mjpython); the real-camera window (pi_camera, spawned child) shows
+    # the live Pi camera feed in --camera real mode.
     viewer = None
     if not args.no_viewer:
         print("Launching MuJoCo viewer...")
-        viewer = sim.launch_viewer('Q1 Lite Brain-Body')
+        try:
+            viewer = sim.launch_viewer('Q1 Lite Brain-Body')
+        except RuntimeError as e:
+            # launch_passive needs mjpython on macOS; under plain python
+            # fall back gracefully (camera-only or headless)
+            print(f"[WARN] MuJoCo viewer unavailable ({e}); "
+                  f"continuing without it.")
+            viewer = None
 
     # ── Launch Brain Monitor ───────────────────────────────────────────
     monitor = None
@@ -388,11 +459,27 @@ def main():
     if args.servo:
         print(f"  Mirror: {args.servo_joint} -> real servo @ {args.servo_host} "
               f"(real-time paced)")
+    if pi_camera is not None:
+        print(f"  Camera: REAL — Pi USB camera @ {args.camera_host} "
+              f"(compound eyes + live view)")
+        if args.visual and brain is not None:
+            print("  Eyes:   real camera frame → T2 → LC4 → GF")
+    elif viewer is not None:
+        print("  Camera: virtual (MuJoCo eyes + viewer)")
+    if viewer is not None and pi_camera is not None:
+        print("  MuJoCo: viewer ON (sim state) alongside camera window")
     if auto_demo_enabled[0]:
         print("  MODE: Auto-demo (SPACE to toggle)")
     else:
         print("  MODE: Manual (keys: 1=sugar 2=P9 3=LC4 4=JO 5=bitter 6=Or56a 0=off)")
-    print("  Close viewer to exit")
+    if pi_camera is not None and viewer is not None:
+        print("  Close either window to exit (q/ESC works in camera window)")
+    elif pi_camera is not None:
+        print("  Press q / ESC in camera window to exit")
+    elif viewer is not None:
+        print("  Close viewer to exit")
+    else:
+        print("  Headless — Ctrl-C to exit")
     print("=" * 70)
     print()
 
@@ -404,6 +491,13 @@ def main():
     try:
         while True:
             if viewer is not None and not viewer.is_running():
+                break
+            if pi_camera is not None and not pi_camera.is_running():
+                print(f"\n[CAMERA] Pi camera stream ended unexpectedly — "
+                      f"{pi_camera.explain_exit()}")
+                print("[CAMERA] (Pi reboot / WiFi drop / camera read "
+                      "failure are the usual causes; check the Pi and "
+                      "rerun.)")
                 break
             if args.duration > 0 and step * PHYSICS_DT >= args.duration:
                 break
@@ -614,9 +708,14 @@ def main():
 
             step += 1
 
-            # ── Viewer sync ────────────────────────────────────────────
+            # ── Viewer / camera sync ──────────────────────────────────
             if viewer is not None:
                 viewer.sync()
+            if pi_camera is not None:
+                if not pi_camera.show(on_key=key_callback):
+                    print(f"\n[CAMERA] display closed — "
+                          f"{pi_camera.close_reason}")
+                    break
 
             # ── Real-time pacing (only when mirroring a real servo) ─
             if servo is not None:
@@ -629,6 +728,8 @@ def main():
         print("\nInterrupted by user.")
 
     finally:
+        if pi_camera is not None:
+            pi_camera.close()
         if viewer is not None:
             viewer.close()
         if servo is not None:

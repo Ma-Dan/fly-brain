@@ -33,7 +33,7 @@ def _stand_rad(name):
 class ServoMirror:
     """Mirror one simulated joint onto a real servo over SSH."""
 
-    def __init__(self, joint='FR_hip', host='ubuntu@192.168.1.29',
+    def __init__(self, joint='FR_hip', host='ubuntu@192.168.1.141',
                  remote_python='/home/ubuntu/miniconda3/envs/lerobot/bin/python',
                  remote_script='/home/ubuntu/servo_stream.py',
                  center=90.0, scale=57.29578, rate_hz=50.0):
@@ -56,6 +56,9 @@ class ServoMirror:
         self._next_t = time.time()
 
         cmd = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8',
+               # keepalives: detect a dead Pi link in ~15s instead of
+               # hanging on a silently-dropped WiFi connection
+               '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=3',
                host, f'{remote_python} {remote_script}']
         self.proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

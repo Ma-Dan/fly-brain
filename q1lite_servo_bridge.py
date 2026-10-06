@@ -49,7 +49,7 @@ def stand_rad(name):
 def main():
     parser = argparse.ArgumentParser(
         description='Q1 Lite single-servo bring-up (MuJoCo -> real MG90D)')
-    parser.add_argument('--host', default='ubuntu@192.168.1.29')
+    parser.add_argument('--host', default='ubuntu@192.168.1.141')
     parser.add_argument('--remote-python',
                         default='/home/ubuntu/miniconda3/envs/lerobot/bin/python')
     parser.add_argument('--remote-script', default='/home/ubuntu/servo_stream.py')
