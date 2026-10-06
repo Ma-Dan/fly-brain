@@ -11,7 +11,7 @@ Usage:
     mjpython fly_embodied_q1lite.py --stimulus p9          # Manual stimulus
     mjpython fly_embodied_q1lite.py --no-auto              # Keyboard only
     mjpython fly_embodied_q1lite.py --olfactory --gustatory --somatosensory
-    mjpython fly_embodied_q1lite.py --servo               # + mirror one joint to a real servo
+    mjpython fly_embodied_q1lite.py --servo               # + mirror all 8 joints to real servos
     mjpython fly_embodied_q1lite.py --camera real --visual # Pi camera as compound eyes + live view
     mjpython fly_embodied_q1lite.py --camera real --visual --servo   # full real-robot loop
 
@@ -38,6 +38,7 @@ Keys (work in BOTH the MuJoCo viewer and the camera window):
 
 import sys
 import argparse
+import json
 import numpy as np
 import mujoco
 import multiprocessing as mp
@@ -48,7 +49,7 @@ from brain_body_bridge import (
     BrainEngine, DNRateDecoder, STIMULI,
 )
 from q1lite_bridge.q1lite_sim import Q1LiteSim
-from q1lite_bridge.q1lite_adaptor import Q1LiteAdaptor, QuadCPG
+from q1lite_bridge.q1lite_adaptor import HIP0, Q1LiteAdaptor, QuadCPG
 from q1lite_bridge.q1lite_vision import Q1LiteVisualBridge
 from q1lite_bridge.servo_mirror import ServoMirror, JOINTS
 
@@ -175,16 +176,20 @@ def main():
                              'internal loop, stall-limited torque, no joint '
                              'readback (taste FK uses commanded angles)')
     parser.add_argument('--servo', action='store_true',
-                        help='Mirror one CPG joint onto a real PWM servo on '
-                             'the Raspberry Pi (loop becomes real-time paced)')
-    parser.add_argument('--servo-joint', default='FR_hip', choices=JOINTS,
-                        help='which joint to mirror (default FR_hip)')
+                        help='Mirror CPG joint targets onto real PWM servos '
+                             '(PCA9685, 8 channels) on the Raspberry Pi '
+                             '(loop becomes real-time paced)')
+    parser.add_argument('--servo-joint', default=None, choices=JOINTS,
+                        help='mirror only this joint (default: all 8 joints)')
     parser.add_argument('--servo-host', default='ubuntu@192.168.1.141',
                         help='SSH target running servo_stream.py')
     parser.add_argument('--servo-center', type=float, default=90.0,
                         help='servo deg at the joint standby pose')
     parser.add_argument('--servo-scale', type=float, default=57.29578,
                         help='servo deg per rad (negative if mounted reversed)')
+    parser.add_argument('--servo-map', default=None,
+                        help='JSON per-joint overrides, e.g. '
+                             '\'{"FL_hip": {"center": 90, "scale": -57.3}}\'')
     parser.add_argument('--camera', choices=['virtual', 'real'],
                         default='virtual',
                         help='camera view: virtual = MuJoCo viewer (default), '
@@ -370,16 +375,31 @@ def main():
     decoder = DNRateDecoder(window_ms=50.0, dt_ms=0.1, max_rate=200.0)
     adaptor = Q1LiteAdaptor(decoder, dt=0.01)
 
-    # ── Real-servo mirror (optional: ONE joint onto the Pi) ────────────
+    # ── Real-servo mirror (optional: 8 joints onto the Pi) ───────────
     servo = None
     if args.servo:
-        print(f"Connecting servo mirror: {args.servo_joint} -> "
-              f"{args.servo_host} ...")
-        servo = ServoMirror(joint=args.servo_joint, host=args.servo_host,
-                            center=args.servo_center, scale=args.servo_scale)
-        print(f"Servo mirror active: {args.servo_joint} "
-              f"(stand {np.degrees(servo.stand):.0f} deg -> "
-              f"servo {args.servo_center:.0f} deg, 50Hz)")
+        joints_list = None if args.servo_joint is None else [args.servo_joint]
+        all_mirrored = JOINTS if joints_list is None else joints_list
+        centers = {j: args.servo_center for j in all_mirrored}
+        scales = {j: args.servo_scale for j in all_mirrored}
+        if args.servo_map:
+            for j, ov in json.loads(args.servo_map).items():
+                centers[j] = float(ov.get('center', args.servo_center))
+                scales[j] = float(ov.get('scale', args.servo_scale))
+        print(f"Connecting servo mirror: "
+              f"{'all 8 joints' if joints_list is None else joints_list[0]} "
+              f"-> {args.servo_host} ...")
+        servo = ServoMirror(joints=joints_list, host=args.servo_host,
+                            centers=centers, scales=scales)
+        if args.servo_joint is None:
+            print(f"Servo mirror active: all 8 joints -> PCA9685 ch0-7 "
+                  f"@ {args.servo_host} (50Hz)")
+        else:
+            leg, part = args.servo_joint.split('_')
+            stand = HIP0[leg] if part == 'hip' else 0.0
+            print(f"Servo mirror active: {args.servo_joint} "
+                  f"(stand {np.degrees(stand):.0f} deg -> "
+                  f"servo {centers[args.servo_joint]:.0f} deg, 50Hz)")
 
     # Register populations for JO monitoring (sound only: no contact-force
     # sensing on the v1 hardware target, so the JO touch channel stays silent)
@@ -457,8 +477,12 @@ def main():
     if args.mg90s:
         print("  Servo:  MG90S PWM model (50Hz commands, no readback)")
     if args.servo:
-        print(f"  Mirror: {args.servo_joint} -> real servo @ {args.servo_host} "
-              f"(real-time paced)")
+        if args.servo_joint is None:
+            print(f"  Mirror: 8 joints -> PCA9685 @ {args.servo_host} "
+                  f"(real-time paced)")
+        else:
+            print(f"  Mirror: {args.servo_joint} -> PCA9685 @ {args.servo_host} "
+                  f"(real-time paced)")
     if pi_camera is not None:
         print(f"  Camera: REAL — Pi USB camera @ {args.camera_host} "
               f"(compound eyes + live view)")
