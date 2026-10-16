@@ -35,7 +35,7 @@ import numpy as np
 
 from q1lite_bridge import Q1LiteSim, QuadCPG
 from q1lite_bridge.q1lite_adaptor import HIP0
-from q1lite_bridge.servo_mirror import JOINTS, ServoMirror, map_targets
+from q1lite_bridge.servo_mirror import JOINTS, MOUNT_FLIP, ServoMirror, default_center, map_targets
 
 SCENE = str(Path(__file__).resolve().parent / 'q1lite' / 'scene.xml')
 DT = 0.001  # sim timestep (s), real-time paced
@@ -75,12 +75,16 @@ def main():
     # ── Build per-joint center/scale (complete dicts over the mirrored set) ──
     joints_list = None if args.joint is None else [args.joint]
     all_mirrored = JOINTS if joints_list is None else joints_list
-    centers = {j: args.center for j in all_mirrored}
-    scales = {j: args.scale for j in all_mirrored}
+    # 膝舵机中位外张 30°（KNEE_SPLAY_DEG），髋保持 90°
+    centers = {j: default_center(j) for j in all_mirrored}
+    # 反向安装的舵机（4 个 hip + RR/FL 膝）默认 scale 取负
+    # （--map 可逐关节覆盖，见 servo_mirror.MOUNT_FLIP）
+    scales = {j: (-args.scale if j in MOUNT_FLIP else args.scale)
+              for j in all_mirrored}
     if args.map:
         for j, ov in json.loads(args.map).items():
-            centers[j] = float(ov.get('center', args.center))
-            scales[j] = float(ov.get('scale', args.scale))
+            centers[j] = float(ov.get('center', centers[j]))
+            scales[j] = float(ov.get('scale', scales[j]))
 
     # ── Open the SSH servo stream (ServoMirror handles handshake + park) ──
     print(f"Connecting to servo stream on {args.host} ...")

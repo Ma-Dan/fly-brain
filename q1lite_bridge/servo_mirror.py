@@ -27,6 +27,36 @@ JOINTS = [f'{leg}_{part}' for leg in LEGS for part in ('hip', 'knee')]
 DEFAULT_CENTER = 90.0
 DEFAULT_SCALE = 57.29578  # servo deg per rad of joint motion (1:1)
 
+# Joints whose servo is mounted reversed on this robot — the default
+# scale is negated so positive joint motion drives the servo the right
+# way.  Per-joint --servo-map / --map overrides still win.
+# All 4 hips: the physical hip servos sweep opposite to the sim's
+# positive-hip direction (forward stride), so without the flip MuJoCo
+# walking forward drives the real robot backward.
+# RR_knee / FL_knee: individually reversed mounting.
+MOUNT_FLIP = {'FR_hip', 'RR_hip', 'FL_hip', 'RL_hip',
+              'RR_knee', 'FL_knee'}
+
+# Knee splay at standby: the knee center is offset from vertical (90°)
+# so the legs angle outward — wider stance, lower body.  The offset
+# direction in servo space follows MOUNT_FLIP so all four knees splay
+# the same physical direction (outward).
+KNEE_SPLAY_DEG = 30.0  # >0 = outward splay; negate if legs tuck inward
+
+
+def default_center(joint):
+    """Default servo center (deg) at the joint's standby pose.
+
+    Hips: DEFAULT_CENTER (90°).  Knees: offset by KNEE_SPLAY_DEG so
+    the legs splay outward — the servo-space offset follows MOUNT_FLIP
+    so all four knees bend the same physical way.
+    """
+    if joint.endswith('_knee'):
+        if joint in MOUNT_FLIP:
+            return DEFAULT_CENTER - KNEE_SPLAY_DEG
+        return DEFAULT_CENTER + KNEE_SPLAY_DEG
+    return DEFAULT_CENTER
+
 
 def _joint_index(name):
     leg, part = name.split('_')

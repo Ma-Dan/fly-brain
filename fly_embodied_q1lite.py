@@ -51,7 +51,7 @@ from brain_body_bridge import (
 from q1lite_bridge.q1lite_sim import Q1LiteSim
 from q1lite_bridge.q1lite_adaptor import HIP0, Q1LiteAdaptor, QuadCPG
 from q1lite_bridge.q1lite_vision import Q1LiteVisualBridge
-from q1lite_bridge.servo_mirror import ServoMirror, JOINTS
+from q1lite_bridge.servo_mirror import ServoMirror, JOINTS, MOUNT_FLIP, default_center
 
 from visual_system import VisualSystem
 from somatosensory import SomatosensorySystem, VibrationSource
@@ -380,12 +380,16 @@ def main():
     if args.servo:
         joints_list = None if args.servo_joint is None else [args.servo_joint]
         all_mirrored = JOINTS if joints_list is None else joints_list
-        centers = {j: args.servo_center for j in all_mirrored}
-        scales = {j: args.servo_scale for j in all_mirrored}
+        # 膝舵机中位外张 30°（KNEE_SPLAY_DEG），髋保持 90°
+        centers = {j: default_center(j) for j in all_mirrored}
+        # 反向安装的舵机（4 个 hip + RR/FL 膝）默认 scale 取负
+        # （--servo-map 可逐关节覆盖，见 servo_mirror.MOUNT_FLIP）
+        scales = {j: (-args.servo_scale if j in MOUNT_FLIP else args.servo_scale)
+                  for j in all_mirrored}
         if args.servo_map:
             for j, ov in json.loads(args.servo_map).items():
-                centers[j] = float(ov.get('center', args.servo_center))
-                scales[j] = float(ov.get('scale', args.servo_scale))
+                centers[j] = float(ov.get('center', centers[j]))
+                scales[j] = float(ov.get('scale', scales[j]))
         print(f"Connecting servo mirror: "
               f"{'all 8 joints' if joints_list is None else joints_list[0]} "
               f"-> {args.servo_host} ...")
