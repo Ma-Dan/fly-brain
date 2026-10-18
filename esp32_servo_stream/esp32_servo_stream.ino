@@ -153,6 +153,10 @@ void setup() {
   // WiFi 连接
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
+  // 关闭 WiFi 省电（modem sleep）：默认省电模式下射频每 ~100-300ms 才醒一次，
+  // TCP 数据在路由器侧积攒成批，醒来时一次性涌入 → latest-wins 丢中间帧
+  // → 步态停顿-爆发式不连贯。关掉后延迟降到 ~1-3ms，50Hz 流平滑到达。
+  WiFi.setSleep(false);
   Serial.print("WiFi connecting");
   while (WiFi.status() != WL_CONNECTED) {
     delay(200);

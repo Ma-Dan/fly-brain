@@ -60,6 +60,11 @@ def main():
             print(f"连接失败: {e}")
             sys.exit(1)
         sock.settimeout(None)
+        # 关 Nagle：50Hz 小包立即发出，避免攒包加剧突发（与 ServoMirror 一致）
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
         rfile, wfile = sock.makefile('r'), sock.makefile('w')
         proc = None
 

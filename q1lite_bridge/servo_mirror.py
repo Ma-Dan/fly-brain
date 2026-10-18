@@ -179,6 +179,13 @@ class ServoMirror:
                 raise RuntimeError(
                     f"servo stream failed to connect to {host}:{port}: {e}")
             self._sock.settimeout(None)  # blocking I/O for streaming
+            # disable Nagle so each 50Hz line goes out immediately as its
+            # own segment (matches the SSH path's per-write send behavior;
+            # Nagle would coalesce frames under WiFi jitter -> bursts)
+            try:
+                self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
             self._rfile = self._sock.makefile('r')
             self._wfile = self._sock.makefile('w')
         else:
