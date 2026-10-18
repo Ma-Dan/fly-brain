@@ -59,6 +59,18 @@ const uint16_t US_MIN = 500;        // 微秒，对应 0°（MG90D）
 const uint16_t US_MAX = 2500;       // 微秒，对应 180°
 // ══════════════════════════════════════════════════════════════════
 
+// ── 行解析（固定缓冲，无堆分配） ──────────────────────────────────
+// 注意：struct 必须在所有使用它的函数之前定义，否则 Arduino 预处理器
+// 自动生成的函数原型会插在 struct 之前导致 "has not been declared" 错误。
+char lineBuf[160];
+size_t lineLen = 0;
+
+struct LineResult {
+  float angles[8];
+  bool  haveAngles;
+  bool  stop;
+};
+
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();  // 0x40, &Wire
 WiFiServer server(TCP_PORT);
 
@@ -93,10 +105,14 @@ bool pca9685Init() {
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000);                     // PCA9685 支持 Fm+
 
-  if (!pwm.begin()) {                        // begin() 默认设 1000Hz！
+  // 先做 I2C 地址探测（begin() 在 2.4.x 返回 void，无法判断成败）
+  Wire.beginTransmission(0x40);
+  if (Wire.endTransmission() != 0) {
     Serial.println("PCA9685 init FAILED (check wiring, addr 0x40)");
     return false;
   }
+
+  pwm.begin();                               // begin() 默认设 1000Hz！
   pwm.setOscillatorFrequency(25000000);      // 默认；与 Pi 端 ServoKit 假设一致
   pwm.setPWMFreq(50);                        // 必须显式设 50Hz（舵机标准）
   delay(10);                                 // 等待 prescale 生效
@@ -107,15 +123,6 @@ bool pca9685Init() {
 }
 
 // ── 行解析（固定缓冲，无堆分配） ──────────────────────────────────
-
-char lineBuf[160];
-size_t lineLen = 0;
-
-struct LineResult {
-  float angles[8];
-  bool  haveAngles;
-  bool  stop;
-};
 
 void parseLine(char* cmd, LineResult* result) {
   while (*cmd == ' ' || *cmd == '\t') cmd++;  // 前导空白
