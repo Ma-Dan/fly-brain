@@ -23,6 +23,7 @@ Usage:
     python q1lite_servo_bridge.py --joint FR_knee --duration 20
     python q1lite_servo_bridge.py --drive 0.5              # gentler gait
     python q1lite_servo_bridge.py --map '{"FL_hip": {"center": 90, "scale": -57.3}}'
+    python q1lite_servo_bridge.py --transport tcp --host 192.168.1.50  # ESP32
 """
 
 import argparse
@@ -50,6 +51,10 @@ def main():
     parser = argparse.ArgumentParser(
         description='Q1 Lite servo bring-up (MuJoCo -> real MG90D x8 via PCA9685)')
     parser.add_argument('--host', default='ubuntu@192.168.1.141')
+    parser.add_argument('--transport', choices=['ssh', 'tcp'], default='ssh',
+                        help='servo link transport: ssh (Pi) or tcp (ESP32)')
+    parser.add_argument('--port', type=int, default=8123,
+                        help='TCP port for servo link (ESP32, default 8123)')
     parser.add_argument('--remote-python',
                         default='/home/ubuntu/miniconda3/envs/lerobot/bin/python')
     parser.add_argument('--remote-script', default='/home/ubuntu/servo_stream.py')
@@ -86,13 +91,16 @@ def main():
             centers[j] = float(ov.get('center', centers[j]))
             scales[j] = float(ov.get('scale', scales[j]))
 
-    # ── Open the SSH servo stream (ServoMirror handles handshake + park) ──
-    print(f"Connecting to servo stream on {args.host} ...")
+    # ── Open the servo stream (ServoMirror handles handshake + park) ──
+    link = (f"{args.host}:{args.port} (tcp)" if args.transport == 'tcp'
+            else f"{args.host} (ssh)")
+    print(f"Connecting to servo stream on {link} ...")
     try:
         servo = ServoMirror(joints=joints_list, host=args.host,
                             remote_python=args.remote_python,
                             remote_script=args.remote_script,
-                            centers=centers, scales=scales, rate_hz=args.rate)
+                            centers=centers, scales=scales, rate_hz=args.rate,
+                            transport=args.transport, port=args.port)
     except (RuntimeError, ValueError) as e:
         print(f"Servo stream failed: {e}")
         sys.exit(1)
@@ -109,7 +117,7 @@ def main():
     n_steps = int(args.duration / DT)
 
     if args.joint is None:
-        print(f"Mirroring all 8 joints -> PCA9685 ch0-7 @ {args.host}, "
+        print(f"Mirroring all 8 joints -> PCA9685 ch0-7 @ {link}, "
               f"center {args.center:.0f} deg, scale {args.scale:.1f} deg/rad, "
               f"{args.rate:.0f}Hz stream, drive={args.drive}, turn={args.turn}, "
               f"{args.duration:.0f}s")

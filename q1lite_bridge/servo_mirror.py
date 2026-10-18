@@ -1,12 +1,15 @@
 """
-ServoMirror: streams CPG joint commands to real PWM servos (MG90D) on a
-Raspberry Pi while the brain-body simulation runs.
+ServoMirror: streams CPG joint commands to real PWM servos (MG90D) while
+the brain-body simulation runs.
 
 Used by fly_embodied_q1lite.py --servo and q1lite_servo_bridge.py.
-Reuses /home/ubuntu/servo_stream.py on the Pi (stdin angle stream ->
-PCA9685 over I2C). Channel i = actuator i (q1lite.xml order), so all 8
-joints can be mirrored at once; each mirrored joint maps its command to
-servo degrees via a per-joint center/scale:
+Two transports share one line protocol (stdin/stdout over SSH to the Pi
+running /home/ubuntu/servo_stream.py -> PCA9685 over I2C, or a raw TCP
+socket to an ESP32): connect, read "ready 8", write lines of 8
+space-separated servo angles (deg, channels 0-7), write "q" to stop.
+Channel i = actuator i (q1lite.xml order), so all 8 joints can be
+mirrored at once; each mirrored joint maps its command to servo degrees
+via a per-joint center/scale:
 
     servo_deg = centers[joint] + scales[joint] * (cmd_rad - stand_rad)
 
@@ -15,6 +18,7 @@ send() is internally rate-limited to ~50Hz so callers can call it
 every physics step. Negative `scale` for reversed servo mounting.
 """
 
+import socket
 import subprocess
 import time
 
@@ -102,25 +106,36 @@ def map_targets(targets, joints, centers, scales):
 
 
 class ServoMirror:
-    """Mirror simulated joints onto real servos over SSH (PCA9685, 8ch)."""
+    """Mirror simulated joints onto real servos (PCA9685, 8ch).
+
+    Two transports, identical wire protocol:
+      * ``transport='ssh'`` (default): SSH to a Raspberry Pi running
+        ``servo_stream.py`` over stdin/stdout (unchanged legacy path).
+      * ``transport='tcp'``: raw TCP socket to an ESP32 speaking the
+        same line protocol — connect, read "ready 8", write 8-float angle
+        lines, "q" to stop.
+    """
 
     def __init__(self, joints=None, host='ubuntu@192.168.1.141',
                  remote_python='/home/ubuntu/miniconda3/envs/lerobot/bin/python',
                  remote_script='/home/ubuntu/servo_stream.py',
                  centers=DEFAULT_CENTER, scales=DEFAULT_SCALE,
-                 rate_hz=50.0, joint=None):
+                 rate_hz=50.0, joint=None,
+                 transport='ssh', port=8123):
         """
         Args:
             joints: joint names to mirror (default: all 8, JOINTS).
-            host: SSH target running servo_stream.py.
-            remote_python: absolute python path on the Pi.
-            remote_script: servo_stream.py path on the Pi.
+            host: SSH target (ssh) or TCP host (tcp) running servo_stream.py.
+            remote_python: absolute python path on the Pi (ssh only).
+            remote_script: servo_stream.py path on the Pi (ssh only).
             centers: servo angle (deg) at each joint's standby pose —
                 scalar, {joint: deg} dict, or list aligned with joints.
             scales: servo deg per rad of joint motion — same forms;
                 negative for reversed servo mounting.
             rate_hz: max command rate (analog PWM servos: 50 Hz).
             joint: legacy single-joint shorthand for joints=[joint].
+            transport: 'ssh' (Pi over SSH) or 'tcp' (ESP32 raw socket).
+            port: TCP port for transport='tcp' (default 8123; ssh ignores).
         """
         if joints is None and joint is not None:
             joints = [joint]
@@ -136,24 +151,73 @@ class ServoMirror:
         self.scales = _per_joint(scales, joints, DEFAULT_SCALE)
         self._interval = 1.0 / float(rate_hz)
         self._next_t = time.time()
+        self._transport = transport
+        self._sock = None
+        self.proc = None
+        self._rfile = None
+        self._wfile = None
 
-        cmd = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8',
-               # keepalives: detect a dead Pi link in ~15s instead of
-               # hanging on a silently-dropped WiFi connection
-               '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=3',
-               host, f'{remote_python} {remote_script}']
-        self.proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, bufsize=1)
-        ready = self.proc.stdout.readline().strip()
+        if transport == 'ssh':
+            cmd = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8',
+                   # keepalives: detect a dead Pi link in ~15s instead of
+                   # hanging on a silently-dropped WiFi connection
+                   '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=3',
+                   host, f'{remote_python} {remote_script}']
+            self.proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1)
+            self._rfile = self.proc.stdout
+            self._wfile = self.proc.stdin
+        elif transport == 'tcp':
+            # Connect with an 8s connect timeout, then drop to blocking
+            # I/O (no read timeout) — matches the SSH path's behavior: if
+            # the remote dies the write eventually fails rather than
+            # silently dropping frames.
+            try:
+                self._sock = socket.create_connection((host, port), timeout=8)
+            except OSError as e:
+                raise RuntimeError(
+                    f"servo stream failed to connect to {host}:{port}: {e}")
+            self._sock.settimeout(None)  # blocking I/O for streaming
+            self._rfile = self._sock.makefile('r')
+            self._wfile = self._sock.makefile('w')
+        else:
+            raise ValueError(
+                f"unknown transport {transport!r} (expected 'ssh' or 'tcp')")
+
+        ready = self._rfile.readline().strip()
         if ready != f'ready {len(JOINTS)}':
-            self.proc.kill()
+            self._cleanup()
             raise RuntimeError(f"servo stream failed on {host}: {ready!r}")
 
         # Park every channel at its center and let the servos settle
         # before the loop starts
         self._send_deg(self._park_degs())
         time.sleep(1.0)
+
+    def _cleanup(self):
+        """Close whichever transport resources are open (best-effort)."""
+        try:
+            if self._wfile is not None:
+                self._wfile.close()
+        except Exception:
+            pass
+        try:
+            if self._rfile is not None:
+                self._rfile.close()
+        except Exception:
+            pass
+        if self._transport == 'tcp' and self._sock is not None:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+        if self._transport == 'ssh' and self.proc is not None:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
 
     def _park_degs(self):
         """8-vector of center angles: mirrored joints at their centers,
@@ -179,20 +243,33 @@ class ServoMirror:
 
     def _send_deg(self, degs):
         line = " ".join(f"{max(0.0, min(180.0, float(d))):.1f}" for d in degs)
-        self.proc.stdin.write(line + "\n")
-        self.proc.stdin.flush()
+        self._wfile.write(line + "\n")
+        self._wfile.flush()
 
     def close(self):
-        """Park at centers, stop pulsing, close the SSH stream."""
+        """Park at centers, stop pulsing, close the servo stream."""
         try:
             self._send_deg(self._park_degs())
             time.sleep(0.8)
-            self.proc.stdin.write("q\n")
-            self.proc.stdin.flush()
-            self.proc.stdin.close()
+            self._wfile.write("q\n")
+            self._wfile.flush()
         except Exception:
             pass
-        try:
-            self.proc.wait(timeout=5)
-        except Exception:
-            self.proc.kill()
+        if self._transport == 'ssh':
+            try:
+                self.proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                self.proc.wait(timeout=5)
+            except Exception:
+                self.proc.kill()
+        else:
+            # TCP: wait briefly for the "stopped" reply, then close files
+            # and the socket.
+            try:
+                self._wfile.flush()
+                self._rfile.readline()  # expect "stopped"
+            except Exception:
+                pass
+            self._cleanup()

@@ -182,7 +182,11 @@ def main():
     parser.add_argument('--servo-joint', default=None, choices=JOINTS,
                         help='mirror only this joint (default: all 8 joints)')
     parser.add_argument('--servo-host', default='ubuntu@192.168.1.141',
-                        help='SSH target running servo_stream.py')
+                        help='SSH target (ssh) or host (tcp) running servo_stream.py')
+    parser.add_argument('--servo-transport', choices=['ssh', 'tcp'], default='ssh',
+                        help='servo link transport: ssh (Pi) or tcp (ESP32)')
+    parser.add_argument('--servo-port', type=int, default=8123,
+                        help='TCP port for servo link (ESP32, default 8123)')
     parser.add_argument('--servo-center', type=float, default=90.0,
                         help='servo deg at the joint standby pose')
     parser.add_argument('--servo-scale', type=float, default=57.29578,
@@ -390,14 +394,19 @@ def main():
             for j, ov in json.loads(args.servo_map).items():
                 centers[j] = float(ov.get('center', centers[j]))
                 scales[j] = float(ov.get('scale', scales[j]))
+        link = (f"{args.servo_host}:{args.servo_port} (tcp)"
+                if args.servo_transport == 'tcp'
+                else f"{args.servo_host} (ssh)")
         print(f"Connecting servo mirror: "
               f"{'all 8 joints' if joints_list is None else joints_list[0]} "
-              f"-> {args.servo_host} ...")
+              f"-> {link} ...")
         servo = ServoMirror(joints=joints_list, host=args.servo_host,
-                            centers=centers, scales=scales)
+                            centers=centers, scales=scales,
+                            transport=args.servo_transport,
+                            port=args.servo_port)
         if args.servo_joint is None:
             print(f"Servo mirror active: all 8 joints -> PCA9685 ch0-7 "
-                  f"@ {args.servo_host} (50Hz)")
+                  f"@ {link} (50Hz)")
         else:
             leg, part = args.servo_joint.split('_')
             stand = HIP0[leg] if part == 'hip' else 0.0
